@@ -236,6 +236,37 @@ a product; a listing whose platform has no registered adapter is skipped
 with a warning (never throws), and each platform's enqueue is wrapped
 individually so one platform's failure never blocks another's.
 
+**Product/variant edit fan-out (`controllers/product.controller.js`):**
+Originally only a stock/quantity change (via `adjustStock`/`setStock` above)
+ever called `fanOutMarketplaceInventory` — a plain product edit (price,
+title, description, photos, brand, mpn) saved to Mongo and reindexed search,
+but never told any channel anything changed. Worst for Google: a Google
+listing carries almost no fields of its own (see the adapter section below),
+so title/description/price/photos come from the Product with no per-listing
+override in the common case — a price edit could disagree with the Merchant
+Center feed for up to `CHANNEL_REFRESH_INTERVAL_DAYS` (25) days, itself a
+disapproval risk.
+
+Fixed by snapshotting a fixed set of marketplace-relevant Product fields
+(`title`, `description`, `price`, `brand`, `mpn`, `condition`, `attachments`)
+before `updateProduct` mutates the document and diffing against the same
+snapshot after save — a change fans out to the base (no-variant) listings
+AND every variant's own listings (a variant without its own price/photo
+override falls back to the product's), via the SAME
+`fanOutMarketplaceInventory` function stock changes already use — no second
+implementation. An edit to a field no adapter reads (internal notes,
+categories, vehicle catalog, `is_taxable`, ...) fans out to nothing.
+`updateVariant` gets the analogous treatment scoped to `price`/`sku`/
+`attachments` (a variant has no title/description/brand/mpn/condition of its
+own), fanning out only to that variant's own listings. Both paths are
+best-effort — a queue failure is logged and never fails the HTTP response,
+same convention as the existing search-reindex enqueue.
+
+`createProduct`/`duplicateProduct` do NOT fan out: a `MarketplaceListing` is
+always created via its own separate "list on eBay/Google" action, never as a
+side effect of product creation, so at the moment either handler returns
+there are unconditionally zero listings to push to.
+
 ### Circuit breaker (`services/marketplace/circuitBreaker.js`)
 
 Per-`(tenant, platform)`, backed by `ChannelConnection.consecutive_failures`/
@@ -285,7 +316,16 @@ unchanged.
 `GET /api/v1/channels` — every registered adapter's manifest merged with
 this tenant's connection status, capabilities, health
 (`consecutive_failures`, `last_success_at`), and listing counts by
-`sync_status`.
+`sync_status`. TASK 5: also `available: boolean` +
+`unavailable_reason: string | null` — `available` is `false` only when the
+adapter's manifest sets `requiresStorefront: true` (Google today) AND this
+tenant has no verified default `Domain`; `unavailable_reason` is then a
+ready-to-show, human-readable string (never `null` in that case). Every
+other adapter (eBay: no `requiresStorefront`) is always `available: true`.
+See `channel.service.js#checkStorefrontRequirement` — the same generic
+check `google.controller.js#getConnectUrl` runs before starting OAuth at
+all, so a tenant can't be shown "available" here and then have the connect
+attempt itself refuse them.
 
 `GET /api/v1/channels/:platform/logs` — paginated `ChannelSyncLog`.
 
@@ -295,6 +335,25 @@ behind a failed/skipped log row (fresh `sync_listing` job, no fencing seq).
 `:platform` is validated against the registry; an unknown platform is a
 404. Registered in `routes/index.js` behind the same `auth()` middleware the
 eBay routes use. `routes/ebay.routes.js` itself is untouched.
+
+`GET /api/v1/listings?group_by=product` — one row per PRODUCT (with all of
+that product's listings nested) instead of one row per listing, for the
+Listings page's grouped table (see `listing.query.service.js#listListingsGroupedByProduct`).
+Same `platform`/`state`/`sync_status`/`search` filters as the ungrouped
+endpoint. **TASK 3 (a later run)**: those filters determine which
+**products** qualify for the page — a product appears only if at least one
+of its listings matches every active filter — but never which of a
+qualifying product's **channels** are shown in its own row; a qualifying
+row always carries that product's full, unfiltered listing set. Originally
+the same filters were applied directly at the listing level before
+grouping, so an active platform filter silently dropped a qualifying
+product's other listings out of its own row, leaving a grey "not listed"
+cell that could mean either "genuinely not listed" or "filtered out",
+indistinguishably — the exact ambiguity a grouped, per-channel view exists
+to avoid. Implemented as two aggregation passes over `MarketplaceListing`:
+one finds the paginated set of qualifying product ids (filtered, as
+before), the second re-fetches every listing for exactly those ids with no
+filters at all.
 
 ## 6. Deploy order
 
@@ -443,9 +502,17 @@ Merchant Center account — see
 [the registration guide](https://developers.google.com/merchant/api/guides/quickstart/registration).
 `google.datasource.service.js#createDataSource` now auto-recovers: on a
 `GCP_NOT_REGISTERED` 401 specifically (never any other 401), it calls
-`registerGcp` once and retries the create exactly once (a `retrying` guard
-prevents any loop) — every future first-time connect self-heals through
-this without needing manual intervention.
+`registerGcp` once, then throws a distinct `GCP_REGISTRATION_PENDING` error
+(`.status = 503`) telling the caller to retry the whole connect flow after a
+few minutes — it deliberately does NOT retry the create synchronously in the
+same request: Google's own docs say registration can take up to ~5 minutes
+to propagate, and a first attempt at an immediate retry was confirmed live
+to fail with the exact same `GCP_NOT_REGISTERED` error. `google.controller.js`
+maps this to a `registration_pending` reason on the OAuth redirect (and
+`ALREADY_REGISTERED` from `registerGcp` itself to `GCP_REGISTRATION_CONFLICT`
+/ `registration_conflict` — see the constraint below). See also §12 for the
+one-off `scripts/registerGoogleGcp.js` operator script that performs this
+same registration directly, outside the connect flow.
 
 **⚠️ Real architectural constraint, not just a one-off fix** — confirmed
 against Google's own docs: *"Each Google Cloud project can only be
@@ -467,15 +534,33 @@ other resolution — not something to route around quietly in code.
 
 - **Public URL** (`listing.resolver.js#resolveProductUrl`): the storefront
   (`pha-storefront`) is a separate repo; its product route is `/product/:slug`
-  (**singular** — confirmed against its `src/App.tsx`). Host resolution, in
-  order: (1) the tenant's **default** verified `Domain`
+  (**singular** — confirmed against its `src/App.tsx`). `platform` is now a
+  **required 4th argument** (TASK 2, a later run) — see below. Host
+  resolution, in order: (1) the tenant's **default** verified `Domain`
   (`is_default: true`, `DOMAIN_STATUS.ACTIVE` — a non-default active domain
-  does not count); (2) `<tenant.slug, hyphens stripped>.${config.payment.linkDomain}`
+  does not count); (2) for a platform whose manifest does **not** declare
+  `requiresStorefront`, `<tenant.slug, hyphens stripped>.${config.payment.linkDomain}`
   — the same per-tenant host `stripe.payment.service.js#buildPaymentBaseUrl`
   already builds for payment links, reused rather than invented fresh. Throws
-  — naming the SKU — only when neither resolves: no default verified `Domain`
-  **and** no `PAYMENT_LINK_DOMAIN` configured, or the product has no `slug`
-  at all (`Product.slug` is not a required field).
+  — naming the SKU — when neither resolves: no default verified `Domain`
+  **and** no `PAYMENT_LINK_DOMAIN` configured (or that platform isn't allowed
+  the fallback at all — see below), or the product has no `slug` at all
+  (`Product.slug` is not a required field).
+  - **TASK 2 (a later run): the linkDomain fallback is refused entirely for
+    any platform whose manifest declares `requiresStorefront: true`** — found
+    as a real gap: §5 already makes a channel `unavailable` (and §9's connect
+    flow already refuses to even start OAuth) for a tenant with no verified
+    default `Domain`, on the reasoning that a shared
+    `<slug>.PAYMENT_LINK_DOMAIN` subdomain isn't something a tenant could
+    claim/verify ownership of with Google — but `resolveProductUrl` itself
+    still built a URL on exactly that host regardless, for any tenant who
+    got connected some other way (e.g. before that guard existed, or via
+    direct DB access). Now `getPlatformManifest(platform)` (looked up off the
+    registry, never assumed) gates the fallback: for a `requiresStorefront`
+    platform, no verified `Domain` throws immediately, naming the platform,
+    rather than silently building the disallowed URL. A platform without
+    `requiresStorefront` (eBay, which never actually calls this function
+    anyway) is completely unaffected — same fallback as always.
 - **Identifiers** (`listing.resolver.js#resolveIdentifiers` +
   `google.adapter.js#applyIdentifiers`): `gtin` when present; else `mpn` +
   `brand` only when **both** are present; else `identifierExists: false`.
@@ -492,6 +577,124 @@ other resolution — not something to route around quietly in code.
   `productInputs.insert` call confirmed that guess wrong (400
   `INVALID_ARGUMENT` on the `availability` field) and it was fixed against
   Google's own client library docs for the exact enum names.
+- **Image URL validation** (`buildProductInputFromResolved`,
+  `isAbsoluteHttpsUrl`, `GoogleImageValidationError`): previously mapped
+  `resolved.photos` straight into `imageLink`/`additionalImageLinks` with no
+  validation at all — Google *accepts* a non-HTTPS or otherwise unusable
+  `imageLink` at `productInputs.insert` time and only disapproves the
+  product later, asynchronously, off this app's radar. Same silent-failure
+  shape eBay already guards against on its own side
+  (`ebay.api.service.js#resolveImageUrls`: warns and drops non-HTTPS
+  entries, throws if nothing usable is left). Now: if a primary image is
+  **present but not** an absolute `https://` URL, `buildProductInputFromResolved`
+  throws `GoogleImageValidationError` naming the SKU (`.status = 400`,
+  `.code = "INVALID_IMAGE_URL"` — same convention as `ConditionUnverifiedError`
+  on the eBay adapter), which `circuitBreaker.js#isTransportOrAuthFailure`
+  correctly classifies as a per-item data problem (never trips the breaker),
+  and `sync.service.js` already writes the resulting `ChannelSyncLog`
+  FAILURE row generically for any thrown adapter error — no separate
+  logging call needed in the adapter itself. A non-HTTPS **additional**
+  image is dropped with a `logger.warn`, not fatal — Google can still list
+  the product on its primary photo alone.
+  - **TASK 1 (a later run): a product with ZERO photos is now rejected the
+    same way.** Originally left as pre-existing behavior (`imageLink` stayed
+    `null`, silently accepted) on the reasoning that Google's live API
+    already 400s on a null `imageLink` — but that's exactly the same
+    *silent*, *asynchronous* failure this whole check exists to close, just
+    for a photo-less product instead of a bad-URL one; a product with no
+    photos in fact fails **more** reliably than one with a bad `http://`
+    URL, not less. Every Google adapter test fixture that used to resolve
+    with `attachments: []` (asserting a successful publish, predating this
+    validation) now includes a real HTTPS photo instead
+    (`google.adapter.publish.test.js`/`google.adapter.batch.test.js`), and
+    `google.adapter.publish.test.js`/`google.adapter.image-validation.test.js`
+    each gained a dedicated zero-photo rejection test.
+  - **`UPLOADS_URL` is exactly what this validation is guarding against.**
+    Every `Attachment.url` (what `resolved.photos[].url` ultimately is) is
+    built by `utils/attachment.js#buildAttachmentUrl` as literally
+    `` `${config.uploads.url}/${fileName}` `` — there is no other source for
+    an attachment's URL. Local dev's `.env.example` default,
+    `UPLOADS_URL=http://localhost:7000/uploads`, is neither `https://` nor
+    publicly reachable, so **every** image on a locally-running tenant would
+    now fail this exact check the moment a product actually has a photo
+    (harmless in dev — nothing here is really being submitted to Google).
+    **In production, `UPLOADS_URL` MUST be set to a real, publicly
+    reachable `https://` host** serving the same `/uploads/<filename>`
+    paths (a CDN in front of the uploads volume, or the API's own public
+    HTTPS domain) — the same variable eBay's `resolveImageUrls` has always
+    silently depended on for the same reason; Google's adapter just used to
+    have no check that would ever say so out loud.
+
+### Connect flow (TASK 4 — consent first, account picked after)
+
+Previously, `GET /google/oauth/connect-url` required `merchantId`,
+`feedLabel`, `contentLanguage` AND `targetCountry` up front, signed all four
+into the OAuth `state`, and `oauthCallback` did the entire connect
+(`ensureDataSource` + persist) in one shot. Problem: a typo'd `merchantId`
+either failed confusingly or silently pointed the connection at the wrong
+account, and the tenant had to know their Merchant Center ID before ever
+granting consent.
+
+Restructured into two authenticated steps either side of the OAuth
+redirect:
+
+1. **`GET /google/oauth/connect-url`** — no query params any more.
+   `google.oauth.service.js#buildConsentUrl({ tenantId })` signs a state
+   carrying only `{ tenant_id, purpose }`. **The CSRF-relevant part of this
+   mechanism — a signed, time-limited, purpose-checked token round-tripped
+   through Google, verified with `resolveState` on the way back — is
+   completely unchanged**, it just carries fewer fields now.
+2. Google's hosted consent screen.
+3. **`GET /google/oauth/callback`** (public, unchanged trust model) —
+   `resolveState` → `google.oauth.service.js#savePendingConnection`
+   exchanges the code and saves ONLY the token, under a new
+   `ChannelConnection` status, `PENDING` (see
+   `constants/channel.constants.js`) — no `ensureDataSource` call happens
+   here any more, since there's no `merchantId` yet. Redirects to
+   `/settings/google?google_connect=choose_account`.
+4. **`GET /google/oauth/accounts`** (authenticated) — the dashboard calls
+   this on landing back with `choose_account`. Loads the tenant's
+   `PENDING` connection's token and calls the Merchant API's
+   `accounts.list` (`google.datasource.service.js#listAccounts` — see
+   below) to return every Merchant Center account that token can reach, for
+   a dropdown. **Never a hard failure for the frontend**: if
+   `accounts.list` itself isn't usable for this token for any reason, the
+   response is `{ accounts: [], listSupported: false, message }` with a
+   200 (not an HTTP error) — `GoogleConnectCard.tsx` falls back to a manual
+   Merchant Center ID text field in that case, per the review's own
+   explicit fallback instruction.
+5. **`POST /google/oauth/complete`** (authenticated) — body
+   `{ merchantId, targetCountry, feedLabel?, contentLanguage? }`.
+   `feedLabel`/`contentLanguage` are optional and defaulted **server-side**
+   (`targetCountry` / `"en"` respectively, in `google.controller.js#completeConnect`
+   — not just in the frontend form) — only `merchantId` and `targetCountry`
+   are actually required. Re-derives `listAccessibleAccounts` and rejects a
+   `merchantId` outside that set BEFORE calling `ensureDataSource`
+   (`MERCHANT_NOT_ACCESSIBLE`, 400) whenever that check is available; when
+   `accounts.list` itself isn't usable (the same fallback case as step 4),
+   this check is skipped and `ensureDataSource`'s own real API call is the
+   reachability check instead — its failure surfaces just as loudly, just
+   one call later. This is the "server-side validation that the id is
+   reachable" the review asked for on the manual-entry fallback path,
+   without a redundant extra round trip when the dropdown path already
+   validated it. On success, upgrades the `PENDING` row to `CONNECTED`
+   (`google.oauth.service.js#completeConnection`) and enqueues the initial
+   `sync_batch` — moved here from the old single-shot `oauthCallback`,
+   since the data source doesn't exist until this step now.
+
+`GCP_REGISTRATION_PENDING`/`GCP_REGISTRATION_CONFLICT` (see the GCP
+developer-registration note above) can now only ever surface from step 5,
+never step 3 — `ensureDataSource` doesn't run until then. Surfaced as a
+`reason` field on the 400 JSON response (not a redirect query param any
+more, since this is a normal authenticated POST, not a browser redirect) —
+`badRequest()` itself has no `reason` slot (shared by every controller in
+the app), so `completeConnect`'s catch block builds that one response
+shape directly rather than widening the shared helper for one endpoint.
+
+A reconnect (switching Merchant Center account, or re-authorizing after a
+revoked token) runs the exact same 5 steps — `savePendingConnection` and
+`completeConnection` both upsert/update the tenant's single
+`(tenant_id, platform)` `ChannelConnection` row, same as before.
 
 ### Services (`services/google/`)
 
@@ -517,7 +720,13 @@ other resolution — not something to route around quietly in code.
 - `google.datasource.service.js` — creates/resolves the tenant's primary
   product data source. Called during **connect**
   (`google.oauth.service.js#completeConnection`), not lazily on first sync —
-  a data source must exist before any push succeeds.
+  a data source must exist before any push succeeds. Also home to every
+  other raw `accounts/v1` HTTP call: `registerGcp`/`getAccountForGcpRegistration`
+  (TASK 3 — see above) and `listAccounts` (TASK 4 — `GET accounts/v1/accounts?pageSize=250`,
+  confirmed against Google's own guide, not a raw live call from this app
+  yet — returns every account this token's user can access, mapped to
+  `{ accountId, accountName }` pairs; a tenant realistically manages a
+  handful of Merchant Center accounts, so only the first page is fetched).
 
 `packCiphertext`/`unpackCiphertext` were extracted from
 `ebay.settings.service.js` (which had its own private copy) into
@@ -648,10 +857,11 @@ Google after 30 days — no error, no log, nothing in the UI. Closed by:
 
 ### Routes
 
-`routes/google.routes.js` — OAuth connect flow only
-(`GET /oauth/connect-url`, `GET /oauth/callback`), mirroring
-`ebay.routes.js`'s own OAuth section. Status/logs/retry are already generic
-— `GET /api/v1/channels`, `GET /api/v1/channels/:platform/logs`,
+`routes/google.routes.js` — OAuth connect flow
+(`GET /oauth/connect-url`, `GET /oauth/callback`, and, since TASK 4,
+`GET /oauth/accounts` + `POST /oauth/complete` — see "Connect flow" above),
+mirroring `ebay.routes.js`'s own OAuth section. Status/logs/retry are
+already generic — `GET /api/v1/channels`, `GET /api/v1/channels/:platform/logs`,
 `POST /api/v1/channels/:platform/retry/:logId` all already work for Google
 with zero Google-specific code, once `registerAdapters.js` registers the
 adapter — that's the entire point of the generic layer built in §1–§8.
@@ -780,3 +990,52 @@ touched at all.
   `channels` block; every other key in that block is unchanged.
 - **`.env.example`** — documented the 3 new `CHANNEL_REFRESH_*` vars;
   nothing existing was changed.
+
+## 12. Operator scripts
+
+### `scripts/registerGoogleGcp.js` (TASK 3)
+
+One-off CLI tool an operator runs directly — deliberately **not** wired
+into the tenant connect flow (`google.controller.js`), which already
+self-heals `GCP_NOT_REGISTERED` on its own (see §9's "GCP project developer
+registration" note). This script exists for registering (or checking) a
+Merchant Center account's registration explicitly, ahead of a tenant ever
+attempting to connect, or to diagnose what a given GCP project is currently
+registered to.
+
+```
+node scripts/registerGoogleGcp.js --account=<merchant center id> --email=<developer email> [--dry-run]
+```
+
+- Performs its own interactive, out-of-band OAuth consent exchange (prints
+  a consent URL, the operator approves it, pastes back the resulting
+  `code`) — there's no `ChannelConnection` token to reuse before a tenant
+  has ever successfully connected, which is the exact situation this script
+  is for. Reuses `google.oauth.service.js#exchangeCodeForTokens` for the
+  actual token exchange rather than reimplementing it.
+- Calls `google.datasource.service.js#registerGcp(token, account, email)` —
+  that function gained an optional third `developerEmail` argument for this
+  (Google's documented request body for `registerGcp` is `{ developerEmail
+  }`; the pre-existing auto-recovery caller in `createDataSource` still
+  omits it, unchanged, so this is additive).
+- Verifies success afterward via the new
+  `google.datasource.service.js#getAccountForGcpRegistration(token)` — a
+  standalone, no-`merchantId` GET (`accounts/v1/accounts:getAccountForGcpRegistration`)
+  that reports which account (if any) the calling GCP project — identified
+  implicitly by the token's client credentials — is currently registered
+  to. **NOTE:** this endpoint's exact response shape was cross-checked
+  against Google's own documentation search index and the sibling
+  `registerGcp` response shape (`{ name, gcpIds }`), not a raw confirmed
+  example response for this specific method — flagged rather than silently
+  assumed correct; cross-check against a real call before leaning on it
+  for anything beyond this script's own human-readable printout.
+- `--dry-run` skips the actual `registerGcp` write but still exchanges a
+  token and runs the verification GET, so an operator can check current
+  registration status non-destructively.
+- Maps Google's three documented `registerGcp` restrictions (test accounts
+  ineligible; target account needs a claimed+verified website; a
+  subaccount can't be registered while authenticated as its parent/MCA) to
+  a human-readable explanation via keyword-matching the raw error body —
+  **best-effort**, not confirmed exact error strings for each case (this
+  app has only ever seen `GCP_NOT_REGISTERED`/`ALREADY_REGISTERED` live).
+  Google's raw error is always printed alongside, never replaced by it.

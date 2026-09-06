@@ -406,6 +406,17 @@ async function findVariant(variantId, productId, tenantId) {
   return ProductVariant.findOne({ _id: variantId, product: productId, tenant_id: tenantId });
 }
 
+// Lean id-only lookup for marketplace fan-out (product.controller.js#updateProduct)
+// — unlike getVariantsByProduct above, this never needs the populated
+// attachments/digital_file, just which variant ids exist so each one's own
+// listings can be fanned out to individually.
+async function listVariantIdsForProduct(productId, tenantId) {
+  const variants = await ProductVariant.find({ product: productId, tenant_id: tenantId })
+    .select("_id")
+    .lean();
+  return variants.map((v) => v._id);
+}
+
 async function getPopulatedVariant(id, tenantId) {
   return ProductVariant.findOne({ _id: id, tenant_id: tenantId })
     .populate("attachments")
@@ -496,6 +507,7 @@ module.exports = {
   getPopulatedProduct,
   createProductRecordWithSlug,
   getVariantsByProduct,
+  listVariantIdsForProduct,
   findVariant,
   getPopulatedVariant,
   hasMarketplaceListings,

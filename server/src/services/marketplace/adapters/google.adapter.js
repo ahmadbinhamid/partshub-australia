@@ -35,6 +35,41 @@ const googleMerchantApi = require("../../google/google.merchant.api.service");
 const { resolveProductUrl, resolveIdentifiers } = require("../listing.resolver");
 const { MARKETPLACE_PLATFORM } = require("../../../constants/marketplace.constants");
 
+// TASK 2: Google will silently ACCEPT a productInputs.insert whose imageLink
+// isn't a public HTTPS URL and only disapprove the product later (async,
+// off this app's radar) — the exact same silent-failure shape eBay already
+// guards against on its own side (ebay.api.service.js#resolveImageUrls:
+// warns and drops non-HTTPS entries, throws if nothing usable is left).
+// Google has no such guard today. Mirrors eBay's status/code convention
+// (see ebay.adapter.js's ConditionUnverifiedError) so this is classified as
+// a per-item data problem, not a transport failure — status 400 keeps
+// circuitBreaker.js#isTransportOrAuthFailure from tripping the breaker over
+// a bad photo, and sync.service.js already writes a ChannelSyncLog FAILURE
+// row for any thrown adapter error, keyed by this error's `.code`, so no
+// separate logging call is needed here.
+class GoogleImageValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "GoogleImageValidationError";
+    this.status = 400;
+    this.code = "INVALID_IMAGE_URL";
+  }
+}
+
+// Deliberately stricter than "starts with https://" (what eBay's own check
+// uses) — an absolute-URL parse also catches a value that merely CONTAINS
+// that prefix without actually being one (e.g. a relative path someone
+// concatenated wrong), which a plain startsWith would let through as a
+// false "looks fine".
+function isAbsoluteHttpsUrl(url) {
+  if (typeof url !== "string" || !url) return false;
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 const key = MARKETPLACE_PLATFORM.GOOGLE;
 
 const manifest = {
@@ -50,6 +85,16 @@ const manifest = {
     "A product data source is created automatically on connect",
   ],
   requiredTenantData: ["merchant_id", "feed_label", "content_language", "target_country"],
+  // TASK 5: Merchant Center requires a claimed AND verified website with
+  // real product pages — a tenant with no verified default Domain has
+  // nothing for Google to crawl/verify, and every product push would end
+  // up disapproved. Absent/false (the registry contract's default for any
+  // adapter that doesn't set this — see registry.js's own header) means a
+  // platform genuinely doesn't need one; eBay never sets this. Read by
+  // channel.service.js#listChannelsForTenant (marks the channel
+  // unavailable with a reason) and google.controller.js#getConnectUrl
+  // (refuses to start OAuth at all) — see server/docs/channel-architecture.md §9.
+  requiresStorefront: true,
 };
 
 const capabilities = {
@@ -158,17 +203,49 @@ function applyIdentifiers(attributes, identifiers, sku) {
 // `identifiers` are resolved by the caller (publish/update/publishBatch) —
 // kept out of this pure builder so it stays a plain, easily-testable
 // function with no DB access of its own.
+//
+// TASK 1 (this run) / TASK 2 (previous run): throws GoogleImageValidationError
+// (never invents a placeholder — see that class's own comment) whenever
+// there is no usable public HTTPS primary image — a present-but-unusable
+// URL (non-HTTPS, malformed) AND a product with zero photos at all are
+// BOTH rejected here now, the same way and for the same reason: Google's
+// real API accepts a null/bad imageLink at insert time and only
+// disapproves the product later, asynchronously, off this app's radar — a
+// photo-less product fails that exact same way, just as reliably as a bad
+// URL does, so leaving it unvalidated was the same silent-failure gap this
+// whole check exists to close. (Previously left as pre-existing behavior —
+// corrected this run; see google.adapter.publish.test.js/
+// google.adapter.batch.test.js, whose `attachments: []` fixtures were
+// updated alongside this to include a real HTTPS photo, and
+// google.adapter.image-validation.test.js's own new zero-photo test.) A
+// non-HTTPS ADDITIONAL image is still just dropped with a warning, not
+// fatal — Google can still list the product on its primary photo alone.
 function buildProductInputFromResolved(resolved, settings, quantity, identifiers, productUrl) {
   const { sku, title, description, price, photos, listing } = resolved;
 
-  const imageUrls = (photos || []).map((p) => (typeof p === "string" ? p : p?.url)).filter(Boolean);
+  const rawUrls = (photos || []).map((p) => (typeof p === "string" ? p : p?.url)).filter(Boolean);
+  const primaryImageUrl = rawUrls[0] || null;
+
+  if (!isAbsoluteHttpsUrl(primaryImageUrl)) {
+    throw new GoogleImageValidationError(
+      `[GoogleAdapter] ${sku}: primary image is not a usable public HTTPS URL` +
+        (primaryImageUrl ? ` (got "${primaryImageUrl}")` : " (product has no images)") +
+        " — Google Shopping requires a real, publicly reachable https:// image. Check UPLOADS_URL.",
+    );
+  }
+
+  const additionalImageUrls = rawUrls.slice(1).filter((url) => {
+    if (isAbsoluteHttpsUrl(url)) return true;
+    logger.warn(`[GoogleAdapter] ${sku}: dropping non-HTTPS additional image URL ("${url}") — Google Shopping only accepts public HTTPS image URLs`);
+    return false;
+  });
 
   const attributes = {
     title,
     description,
     link: productUrl,
-    imageLink: imageUrls[0] || null,
-    ...(imageUrls.length > 1 ? { additionalImageLinks: imageUrls.slice(1) } : {}),
+    imageLink: primaryImageUrl,
+    ...(additionalImageUrls.length > 0 ? { additionalImageLinks: additionalImageUrls } : {}),
     availability: availabilityFor(quantity),
     condition: listing.condition || "new",
     price: {
@@ -242,7 +319,7 @@ async function publishOrUpdate(resolved, settings) {
   // Fails loudly (throws) if the tenant has no resolvable host (verified
   // default domain or linkDomain fallback) or the product has no slug —
   // see listing.resolver.js#resolveProductUrl's own comment.
-  const productUrl = await resolveProductUrl(listing.tenant_id, product.slug, resolved.sku);
+  const productUrl = await resolveProductUrl(listing.tenant_id, product.slug, resolved.sku, key);
 
   const token = await googleOauthService.getValidAccessToken(settings);
   if (!token) throw new Error(`[GoogleAdapter] ${resolved.sku}: could not obtain a valid Google access token`);
@@ -322,7 +399,7 @@ async function publishBatch(resolvedList, settings) {
       const { listing, product } = resolved;
       const quantity = await resolveQuantity(resolved);
       const identifiers = resolveIdentifiers(listing, product);
-      const productUrl = await resolveProductUrl(listing.tenant_id, product.slug, resolved.sku);
+      const productUrl = await resolveProductUrl(listing.tenant_id, product.slug, resolved.sku, key);
 
       const productInput = buildProductInputFromResolved(resolved, settings, quantity, identifiers, productUrl);
       await googleMerchantApi.insertProductInput(token, settings, productInput);
@@ -371,4 +448,6 @@ module.exports = {
   buildFullProductResourceName,
   applyIdentifiers,
   availabilityFor,
+  isAbsoluteHttpsUrl,
+  GoogleImageValidationError,
 };

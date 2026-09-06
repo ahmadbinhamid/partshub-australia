@@ -51,12 +51,58 @@ async function throwForResponse(res, action) {
 // specifically means a DIFFERENT tenant already holds this project's one
 // registration slot — a real architectural constraint to surface loudly,
 // not paper over.
-async function registerGcp(token, merchantId) {
+// developerEmail: optional (TASK 3 — server/scripts/registerGoogleGcp.js is
+// the first real caller that passes one; Google's own documented request
+// body for this method is `{ developerEmail }`, confirmed against
+// https://developers.google.com/merchant/api/guides/quickstart/direct-api-calls's
+// own example — the pre-existing auto-recovery call below from
+// createDataSource has run live without it, so it's kept optional/omitted
+// rather than required, to not change that already-working call's request
+// shape).
+async function registerGcp(token, merchantId, developerEmail = null) {
   const url = `${ACCOUNTS_BASE}/accounts/${merchantId}/developerRegistration:registerGcp`;
-  const res = await fetch(url, { method: "POST", headers: headersFor(token), body: JSON.stringify({}) });
+  const body = developerEmail ? { developerEmail } : {};
+  const res = await fetch(url, { method: "POST", headers: headersFor(token), body: JSON.stringify(body) });
   if (!res.ok) await throwForResponse(res, "developerRegistration.registerGcp");
   logger.info(`[google.datasource] registered this GCP project as a developer for merchant ${merchantId}`);
   return res.json();
+}
+
+// Read-only: which Merchant Center account (if any) the CALLING GCP
+// project — identified implicitly by the OAuth token's client credentials,
+// not by any parameter here — is currently registered to. No merchantId in
+// the path; this is a standalone custom method on the `accounts` collection
+// (confirmed via Google's own reference index — a live example response
+// body was not available to cross-check at the time this was written, see
+// server/scripts/registerGoogleGcp.js's own comment). Returns the raw
+// DeveloperRegistration resource ({ name: "accounts/{ID}/developerRegistration",
+// gcpIds: [...] }) — never throws for "not registered to anything", since
+// that's an expected, valid state for a brand-new GCP project.
+async function getAccountForGcpRegistration(token) {
+  const url = `${ACCOUNTS_BASE}/accounts:getAccountForGcpRegistration`;
+  const res = await fetch(url, { headers: headersFor(token) });
+  if (!res.ok) await throwForResponse(res, "developerRegistration.getAccountForGcpRegistration");
+  return res.json();
+}
+
+// TASK 4 (Google connect flow UX): every Merchant Center account this
+// token's Google user can access — GET accounts/v1/accounts, no filter, so
+// this returns exactly what the tenant should be allowed to pick from in
+// the connect dropdown, not a hand-typed id we then have to hope is right.
+// Confirmed against Google's own guide (both the base call shape and the
+// `{ accounts: [{ name, accountId, accountName, ... }], nextPageToken }`
+// response shape — see the "Filter accounts" guide's own example), not a
+// raw live call from this app yet. Only the first page is fetched — a
+// tenant realistically manages a small, single-digit number of Merchant
+// Center accounts, and a paginated dropdown is more complexity than this
+// picker needs; `pageSize` is set high enough (250) that pagination should
+// never actually matter in practice.
+async function listAccounts(token) {
+  const url = `${ACCOUNTS_BASE}/accounts?pageSize=250`;
+  const res = await fetch(url, { headers: headersFor(token) });
+  if (!res.ok) await throwForResponse(res, "accounts.list");
+  const data = await res.json();
+  return (data.accounts || []).map((a) => ({ accountId: a.accountId, accountName: a.accountName || null }));
 }
 
 function isGcpNotRegistered(err) {
@@ -180,4 +226,4 @@ async function ensureDataSource(token, { merchantId, feedLabel, contentLanguage 
   return match.name.split("/").pop();
 }
 
-module.exports = { createDataSource, listDataSources, ensureDataSource, registerGcp };
+module.exports = { createDataSource, listDataSources, ensureDataSource, registerGcp, getAccountForGcpRegistration, listAccounts };

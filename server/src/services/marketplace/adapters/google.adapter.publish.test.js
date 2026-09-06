@@ -123,8 +123,14 @@ async function makeFixture({ stockControl = true, stockCount = 5, withDomain = t
   return { tenantId, product, listing };
 }
 
-async function resolveFor(listing, product) {
-  const populatedProduct = { ...product.toObject(), attachments: [] };
+// TASK 1 (this run): a real, usable HTTPS image — every fixture below now
+// carries one so these tests exercise the actual success path (a product
+// with NO image is a rejection now, not a null-imageLink success — see
+// google.adapter.image-validation.test.js for that case specifically).
+const VALID_HTTPS_IMAGE_URL = "https://cdn.example.com/photo.jpg";
+
+async function resolveFor(listing, product, { photos = [{ type: "image", url: VALID_HTTPS_IMAGE_URL }] } = {}) {
+  const populatedProduct = { ...product.toObject(), attachments: photos };
   return resolveListing(listing, populatedProduct, null);
 }
 
@@ -235,6 +241,35 @@ test("google adapter: a listing with no resolvable public product URL (no defaul
 
   await assert.rejects(() => googleAdapter.publish(resolved, settings, {}, null), /No verified default domain/);
   assert.equal(fetchCalls.length, 0, "no Merchant API call must happen when the product URL can't be resolved");
+});
+
+// TASK 1 (this run): a product with ZERO photos is now rejected the same
+// way a bad-URL photo is — Google's real API accepts a null imageLink and
+// only disapproves the product later, so a photo-less product used to fail
+// exactly as silently as a bad-URL one did before TASK 2 (previous run)
+// closed that gap. This is the end-to-end counterpart to
+// google.adapter.image-validation.test.js's pure-builder version of the
+// same case.
+test("google adapter: a product with ZERO photos fails loudly (GoogleImageValidationError), never pushes", async (t) => {
+  await mongoose.connect(config.mongoUri);
+  installFetchStub(VALID_MERCHANT_API_HANDLER);
+  t.after(() => mongoose.disconnect());
+
+  const { tenantId, product, listing } = await makeFixture({});
+  const settings = await googleAdapter.loadSettings(tenantId);
+  const resolved = await resolveFor(listing, product, { photos: [] });
+
+  await assert.rejects(
+    () => googleAdapter.publish(resolved, settings, {}, null),
+    (err) => {
+      assert.ok(err instanceof googleAdapter.GoogleImageValidationError);
+      assert.equal(err.status, 400);
+      assert.equal(err.code, "INVALID_IMAGE_URL");
+      assert.match(err.message, /no images/);
+      return true;
+    },
+  );
+  assert.equal(fetchCalls.length, 0, "no Merchant API call must happen for a photo-less product");
 });
 
 test("google adapter: loadSettings returns null for a tenant with no ChannelConnection, and sync.service's not-connected path handles it without throwing", async (t) => {

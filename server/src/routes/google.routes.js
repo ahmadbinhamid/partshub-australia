@@ -12,13 +12,17 @@ const asyncHandler = require("../middlewares/asyncHandler");
 const { auth } = require("../middlewares/auth");
 const validate = require("../middlewares/validate");
 const v = require("../validators/google.listing.validation");
+const oauthV = require("../validators/google.oauth.validation");
 const ctrl = require("../controllers/google.controller");
 const listingCtrl = require("../controllers/google.listing.controller");
 
-// ── OAuth consent flow ───────────────────────────────────────────────────────
+// ── OAuth consent flow (TASK 4: consent first, account picked after — see
+// google.controller.js's own module header for the full step list) ─────────
 router.get("/oauth/connect-url", auth(), asyncHandler(ctrl.getConnectUrl));
 // Public — Google redirects the browser here directly, no JWT available.
 router.get("/oauth/callback", asyncHandler(ctrl.oauthCallback));
+router.get("/oauth/accounts", auth(), asyncHandler(ctrl.getAccounts));
+router.post("/oauth/complete", auth(), validate(oauthV.completeConnect), asyncHandler(ctrl.completeConnect));
 
 // ── Listings (create/update only — see routes/listing.routes.js for the rest) ──
 router.post("/listings", auth(), validate(v.createListing), asyncHandler(listingCtrl.createListing));

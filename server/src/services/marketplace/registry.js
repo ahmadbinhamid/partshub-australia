@@ -6,7 +6,20 @@
 // Every adapter is expected to export (see adapters/ebay.adapter.js for the
 // reference implementation):
 //   key            - platform key, e.g. "ebay"
-//   manifest       - { key, name, logo, description, status, authType, setupSteps, requiredTenantData }
+//   manifest       - { key, name, logo, description, status, authType, setupSteps, requiredTenantData,
+//                      requiresStorefront }
+//                      requiresStorefront - optional <boolean>, default false.
+//                      Declares that this platform needs the tenant to have
+//                      a verified storefront domain of their own before it
+//                      can work at all (Google Shopping: Merchant Center
+//                      requires a claimed+verified website — see
+//                      google.adapter.js's manifest and
+//                      services/marketplace/channel.service.js#listChannelsForTenant,
+//                      which marks the channel unavailable with a reason
+//                      instead of letting a tenant connect and silently get
+//                      every product disapproved). Absent means false — an
+//                      adapter that doesn't need one (eBay) needs zero
+//                      changes.
 //   capabilities   - { publish, inventory, batch, orders, webhooks, inboundInventory, variants }
 //   loadSettings(tenantId) -> resolved connection/settings object, or null
 //   publish(...) / update(...) / end(...)

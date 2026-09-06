@@ -12,7 +12,7 @@
 //   node --test src/services/google/google.merchant.api.circuitbreaker.test.js
 
 const test = require("node:test");
-const { mock } = require("node:test");
+const { mock, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const mongoose = require("mongoose");
 const crypto = require("node:crypto");
@@ -20,6 +20,7 @@ const config = require("../../config");
 
 require("../../models/index");
 const Product = require("../../models/Product");
+const Attachment = require("../../models/Attachment");
 const Location = require("../../models/Location");
 const Inventory = require("../../models/Inventory");
 const Domain = require("../../models/Domain");
@@ -36,6 +37,23 @@ function jsonResponse(status, body) {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
 
+// TASK 1 (a later run): this fixture's product needs a real photo now that
+// a zero-photo product is itself a (400, non-breaker) rejection — without
+// one, both tests below would fail before ever reaching the simulated
+// 503/400 Merchant API response they exist to test. Attachment.url is a
+// virtual built from config.uploads.url; overridden to a fake https host
+// for the life of this file (restored after) since this env's real
+// UPLOADS_URL is plain http://. Same fix as
+// google.adapter.batch.test.js's own makeTenantWithListings.
+let originalUploadsUrl;
+before(() => {
+  originalUploadsUrl = config.uploads.url;
+  config.uploads.url = "https://cdn.example.com";
+});
+after(() => {
+  config.uploads.url = originalUploadsUrl;
+});
+
 async function makeFixture() {
   const suffix = crypto.randomUUID();
   const tenantId = new mongoose.Types.ObjectId();
@@ -48,6 +66,13 @@ async function makeFixture() {
     verification_token: crypto.randomUUID(),
   });
 
+  const attachment = await Attachment.create({
+    tenant_id: tenantId,
+    uid: `cb-photo-${suffix}`,
+    file_name: `cb-photo-${suffix}.jpg`,
+    type: "image",
+  });
+
   const product = await Product.create({
     tenant_id: tenantId,
     title: `CB test ${suffix}`,
@@ -55,6 +80,7 @@ async function makeFixture() {
     sku: `CB-${suffix}`,
     status: "active",
     stock_control: true,
+    attachments: [attachment._id],
   });
   const location = await Location.create({ tenant_id: tenantId, name: `Loc ${suffix}` });
   await Inventory.create({ product: product._id, variant: null, location: location._id, stock_count: 2 });

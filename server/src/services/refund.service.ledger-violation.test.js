@@ -35,18 +35,54 @@ const Payment = require("../models/Payment");
 const Refund = require("../models/Refund");
 const Location = require("../models/Location");
 const Inventory = require("../models/Inventory");
+const MarketplaceListing = require("../models/MarketplaceListing");
 const { ebayQueue } = require("../queues/ebay.queue");
 const refundService = require("./refund.service");
 const { REFUND_STATUS } = require("../constants/refund.constants");
+const { MARKETPLACE_PLATFORM, LISTING_STATE } = require("../constants/marketplace.constants");
+
+// fanOutMarketplaceInventory (inventory.service.js) skips any listing whose
+// platform has no registered adapter (registry.has(...)) rather than
+// throwing — silently, by design, so one unknown platform never aborts
+// every other listing's fan-out. This test never used to register one at
+// all, so its restock/reversal pushes were being silently skipped
+// regardless of the MarketplaceListing/job-name fixes above — same
+// registry.register pattern sync.service.fencing.test.js already uses for
+// exactly this reason.
+const registry = require("./marketplace/registry");
+if (!registry.has(MARKETPLACE_PLATFORM.EBAY)) {
+  registry.register({ key: MARKETPLACE_PLATFORM.EBAY, publish: async () => {}, update: async () => {}, end: async () => {} });
+}
 
 const UNIT_PRICE = 1000; // $10.00/unit
 const LINE_QUANTITY = 2; // order has 2 units total on the one line
 const TEST_TENANT_ID = new mongoose.Types.ObjectId();
 
-async function countPushJobsForSku(sku) {
-  const jobs = await ebayQueue.getJobs(["waiting", "active", "completed", "failed", "delayed"], 0, -1);
-  return jobs.filter((j) => j.name === "push_quantity" && j.data?.sku === sku);
-}
+// CORRECTIONS (found while investigating the full-test-suite hang — this
+// file was unreachable behind an earlier stall for long enough that nobody
+// had actually seen its real pass/fail status until now):
+// 1. The "eBay was re-pushed" assertion below used to count raw Bull jobs
+//    named "push_quantity" carrying `{ sku }` — an older, now fully
+//    superseded mechanism. The current, generic, one-writer-path push (see
+//    inventory.service.js#fanOutMarketplaceInventory, and
+//    sync.service.fencing.test.js's own header comment on the same
+//    history) enqueues a job named "sync_listing" carrying
+//    `{ listingId, seq }` — no `sku` at all — and only ever fires for a
+//    product that actually HAS an ACTIVE MarketplaceListing row on that
+//    platform, which this test's fixture never created. Fixed by creating
+//    a real ACTIVE eBay MarketplaceListing (below) and registering a fake
+//    "ebay" adapter (fanOutMarketplaceInventory skips any platform with no
+//    registered adapter — same pattern sync.service.fencing.test.js uses).
+// 2. Even with both of those fixed, a raw job COUNT is still the wrong
+//    signal — channel.queue.js#enqueueChannelJobDirect deliberately
+//    debounces rapid-fire sync_listing calls for the SAME listing into ONE
+//    Bull job (see channel.queue.debounce.test.js), and refund1's push,
+//    refund2's apply, and refund2's reversal all target the same listing
+//    within milliseconds of each other — so the final assertion checks
+//    `MarketplaceListing.push_seq` instead (fanOutMarketplaceInventory
+//    claims a fresh fencing token on every real attempt, unconditionally,
+//    regardless of whether Bull's own debounce later collapses the
+//    resulting job) — see that assertion's own comment.
 
 test("ledger violation: effects already applied, then auto-voided — restock re-deducted and eBay re-pushed", async (t) => {
   await mongoose.connect(config.mongoUri);
@@ -107,6 +143,20 @@ test("ledger violation: effects already applied, then auto-voided — restock re
     paid_at: new Date(),
   });
 
+  // fanOutMarketplaceInventory only ever enqueues a push for a product that
+  // actually HAS an ACTIVE listing on that platform (see that function's
+  // own MarketplaceListing.find query) — without this, refund1/refund2's
+  // restock/reversal would silently push to nobody, regardless of job name.
+  const listing = await MarketplaceListing.create({
+    tenant_id: TEST_TENANT_ID,
+    product: productId,
+    variant: null,
+    platform: MARKETPLACE_PLATFORM.EBAY,
+    state: LISTING_STATE.ACTIVE,
+    condition: "NEW",
+  });
+  const listingId = listing._id.toString();
+
   try {
     // ── Refund 1: legitimate, 1 of 2 units, through the real createRefund
     // path — leaves 1 unit genuinely refundable. ──────────────────────────
@@ -126,7 +176,7 @@ test("ledger violation: effects already applied, then auto-voided — restock re
     const afterRefund1 = await Inventory.findById(inventory._id);
     assert.equal(afterRefund1.stock_count, STARTING_STOCK + 1, "refund 1's restock must have credited 1 unit");
 
-    const jobsBeforeViolatingRefund = await countPushJobsForSku(sku);
+    const seqBeforeViolatingRefund = (await MarketplaceListing.findById(listing._id).select("push_seq").lean()).push_seq;
 
     // ── Refund 2: manufactured directly, bypassing createRefund's own
     // admission validation entirely (simulating a bug in the lock, a manual
@@ -197,22 +247,49 @@ test("ledger violation: effects already applied, then auto-voided — restock re
     });
 
     await t.test("eBay was re-pushed for both the apply and the void reversal", async () => {
-      const jobsAfter = await countPushJobsForSku(sku);
+      // CORRECTED (found while investigating the full-suite hang — see the
+      // module comment): a raw Bull job COUNT is the wrong signal here.
+      // channel.queue.js#enqueueChannelJobDirect deliberately debounces
+      // rapid-fire sync_listing calls for the SAME listing into ONE Bull
+      // job (by design — see channel.queue.debounce.test.js) — refund1's
+      // push, refund2's apply, and refund2's reversal all target this same
+      // listing within milliseconds of each other, so they collapse to far
+      // fewer raw queue entries than the number of times a push was
+      // actually ATTEMPTED, and a job-count assertion here would be
+      // asserting against the debounce feature itself, not against
+      // anything refund.service.js does. `push_seq` is the right signal
+      // instead: fanOutMarketplaceInventory claims a fresh fencing token
+      // (`$inc: { push_seq: 1 }`) on every real attempt, unconditionally,
+      // regardless of whether Bull ultimately collapses the resulting job
+      // — exactly the "was a push attempted" fact this test cares about,
+      // and immune to debounce timing, to a real background worker racing
+      // to consume/remove the job before this assertion runs, or to
+      // anything else about the queue's own internal state.
+      const seqAfter = (await MarketplaceListing.findById(listing._id).select("push_seq").lean()).push_seq;
       assert.equal(
-        jobsAfter.length - jobsBeforeViolatingRefund.length,
+        seqAfter - seqBeforeViolatingRefund,
         2,
-        "refund 2's own applyRefundEffects call must enqueue exactly 2 pushes: one for its restock, one for the void's re-deduction",
+        "refund 2's own applyRefundEffects call must attempt exactly 2 pushes: one for its restock, one for the void's re-deduction",
       );
     });
   } finally {
     const jobs = await ebayQueue.getJobs(["waiting", "active", "completed", "failed", "delayed"], 0, -1);
-    await Promise.all(jobs.filter((j) => j.data?.sku === sku).map((j) => j.remove().catch(() => {})));
+    await Promise.all(jobs.filter((j) => j.data?.listingId === listingId).map((j) => j.remove().catch(() => {})));
 
     await Refund.deleteMany({ order: order._id });
     await Payment.deleteMany({ order: order._id });
     await Order.deleteOne({ _id: order._id });
     await Inventory.deleteOne({ _id: inventory._id });
+    await MarketplaceListing.deleteOne({ _id: listing._id });
     await Location.deleteOne({ _id: location._id });
+    // This test deliberately exercises the REAL "ebay" Bull queue (see the
+    // module header) rather than mocking it — queues/ebay.queue.js's
+    // `ebayQueue` is lazy now (constructed on first real access, not at
+    // require time — see that file's own comment), but THIS test genuinely
+    // does access it for real, so it genuinely does need closing here, same
+    // as channel.worker.midflight.test.js's own precedent for a real Bull
+    // queue a test opened directly.
+    await ebayQueue.close();
     await mongoose.disconnect();
   }
 });

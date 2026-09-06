@@ -104,6 +104,140 @@ async function listListings({ skip, limit, product, product_in, platform, state,
   return { items: shapedItems, total: countResult[0]?.total || 0 };
 }
 
+// Fields projected onto each nested listing summary — shared between the
+// two aggregation passes below so their $group stages stay identical.
+const GROUPED_LISTING_PROJECTION = {
+  _id: "$_id",
+  platform: "$platform",
+  state: "$state",
+  sync_status: "$sync_status",
+  synced_at: "$synced_at",
+  sync_error: "$sync_error",
+  external_listing_id: "$external_listing_id",
+  condition: "$condition",
+  store_sku: "$store_sku",
+  updated_at: "$updated_at",
+};
+
+// TASK 6: one row per PRODUCT instead of one per listing — a product on two
+// channels currently renders as two disconnected rows with no relationship
+// between them; at real catalogue size that's ~2x the rows and a product's
+// overall state is split across them.
+//
+// TASK 3 (this run) — filter/grey-cell ambiguity fix: platform/state/
+// sync_status/search now determine which PRODUCTS qualify (a product
+// appears only if at least one of its listings matches every active
+// filter), never which of a QUALIFYING product's channels are shown. Once
+// a product qualifies, its row always carries its FULL listing set across
+// every platform. Previously the same filters were applied directly to the
+// listing rows before grouping, so an active platform filter silently
+// dropped a qualifying product's OTHER listings out of its own row —
+// leaving a grey "not listed" cell that could mean either "genuinely not
+// listed" or "filtered out", indistinguishably. Implemented as two
+// aggregation passes: (1) find the page of distinct qualifying product ids
+// (filtered, exactly as before), (2) re-fetch every listing for exactly
+// those product ids with NO filters — the full-picture pass a grey cell's
+// meaning now depends on.
+async function listListingsGroupedByProduct({ skip, limit, product, product_in, platform, state, sync_status, search } = {}, tenantId) {
+  const match = { tenant_id: tenantId };
+  if (platform) match.platform = platform;
+  if (product) match.product = mongoose.Types.ObjectId.createFromHexString(product);
+  if (product_in?.length) {
+    match.product = { $in: product_in.map((id) => mongoose.Types.ObjectId.createFromHexString(id)) };
+  }
+  if (state) match.state = state;
+  if (sync_status) match.sync_status = sync_status;
+
+  // ── Pass 1: which products qualify (filtered), paginated ──────────────────
+  const findPipeline = [
+    { $match: match },
+    {
+      $lookup: {
+        from: "products",
+        localField: "product",
+        foreignField: "_id",
+        as: "product",
+        pipeline: [{ $project: { _id: 1 } }],
+      },
+    },
+    { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+  ];
+
+  if (search) {
+    findPipeline.push({
+      $match: {
+        $or: buildWordSearchOr(
+          ["product.title", "product.sku", "title_override", "store_sku", "item_specifics.mpn", "item_specifics.brand"],
+          search,
+        ),
+      },
+    });
+  }
+
+  findPipeline.push(
+    { $group: { _id: "$product._id", latest_updated_at: { $max: "$updated_at" } } },
+    { $sort: { latest_updated_at: -1 } },
+  );
+
+  const countPipeline = [...findPipeline, { $count: "total" }];
+  findPipeline.push({ $skip: skip }, { $limit: limit });
+
+  const [idRows, countResult] = await Promise.all([
+    MarketplaceListing.aggregate(findPipeline),
+    MarketplaceListing.aggregate(countPipeline),
+  ]);
+  const total = countResult[0]?.total || 0;
+
+  const pageProductIds = idRows.map((r) => r._id).filter(Boolean);
+  if (!pageProductIds.length) return { items: [], total };
+
+  // ── Pass 2: the FULL, unfiltered listing set for exactly those products ───
+  const fullPipeline = [
+    { $match: { tenant_id: tenantId, product: { $in: pageProductIds } } },
+    {
+      $lookup: {
+        from: "products",
+        localField: "product",
+        foreignField: "_id",
+        as: "product",
+        pipeline: [{ $project: { title: 1, slug: 1, sku: 1, price: 1 } }],
+      },
+    },
+    { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: "$product._id",
+        product: { $first: "$product" },
+        listings: { $push: GROUPED_LISTING_PROJECTION },
+      },
+    },
+  ];
+
+  const groups = await MarketplaceListing.aggregate(fullPipeline);
+
+  // Pass 2's own aggregate doesn't promise it returns groups in Pass 1's
+  // relevance order — re-order explicitly rather than relying on it.
+  const groupsById = new Map(groups.map((g) => [String(g._id), g]));
+  const orderedGroups = pageProductIds.map((id) => groupsById.get(String(id))).filter(Boolean);
+
+  // eBay item URL enrichment, same as listListings above — only for eBay
+  // rows within each group's nested listings, and only fetched at all if at
+  // least one is present on this page.
+  const hasEbayRows = orderedGroups.some((g) => g.listings.some((l) => l.platform === MARKETPLACE_PLATFORM.EBAY));
+  const ebaySettings = hasEbayRows ? await ebaySettingsService.getSettings(tenantId) : null;
+
+  const items = orderedGroups.map((g) => ({
+    product: g.product,
+    listings: g.listings.map((l) =>
+      l.platform === MARKETPLACE_PLATFORM.EBAY
+        ? { ...l, ebay_item_url: buildEbayItemUrl(l.external_listing_id, ebaySettings) }
+        : l,
+    ),
+  }));
+
+  return { items, total };
+}
+
 async function getListingById(id, tenantId) {
   return MarketplaceListing.findOne({ _id: id, tenant_id: tenantId })
     .populate({
@@ -149,4 +283,4 @@ async function pushListing(id, tenantId) {
   return listing;
 }
 
-module.exports = { listListings, getListingById, deleteListing, pushListing };
+module.exports = { listListings, listListingsGroupedByProduct, getListingById, deleteListing, pushListing };

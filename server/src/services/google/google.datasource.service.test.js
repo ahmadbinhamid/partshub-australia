@@ -134,3 +134,64 @@ test("createDataSource: a 409 (data source already exists) still returns null wi
   assert.equal(result, null);
   assert.equal(fetchCalls, 1);
 });
+
+// TASK 3 (server/scripts/registerGoogleGcp.js): registerGcp gained an
+// optional third `developerEmail` argument — Google's own documented
+// request body for this method is `{ developerEmail }` (confirmed against
+// https://developers.google.com/merchant/api/guides/quickstart/direct-api-calls's
+// own example). Must stay backward compatible: the pre-existing
+// auto-recovery call from createDataSource above never passes one and has
+// run live against the real API without it.
+test("registerGcp: includes developerEmail in the request body when provided", async (t) => {
+  let sentBody = null;
+  mock.method(global, "fetch", async (url, opts) => {
+    sentBody = JSON.parse(opts.body);
+    return jsonResponse(200, { name: "accounts/123/developerRegistration", gcpIds: ["456"] });
+  });
+  t.after(() => mock.restoreAll());
+
+  const result = await datasourceService.registerGcp("tok", "123", "ops@example.com");
+  assert.deepEqual(sentBody, { developerEmail: "ops@example.com" });
+  assert.deepEqual(result, { name: "accounts/123/developerRegistration", gcpIds: ["456"] });
+});
+
+test("registerGcp: omits developerEmail (empty body) when not given — unchanged from before this argument existed", async (t) => {
+  let sentBody = null;
+  mock.method(global, "fetch", async (url, opts) => {
+    sentBody = JSON.parse(opts.body);
+    return jsonResponse(200, { name: "accounts/123/developerRegistration" });
+  });
+  t.after(() => mock.restoreAll());
+
+  await datasourceService.registerGcp("tok", "123");
+  assert.deepEqual(sentBody, {});
+});
+
+test("getAccountForGcpRegistration: GETs the standalone accounts:getAccountForGcpRegistration endpoint (no merchantId in the path) and returns the parsed body", async (t) => {
+  let calledUrl = null;
+  let calledMethod = null;
+  mock.method(global, "fetch", async (url, opts) => {
+    calledUrl = String(url);
+    calledMethod = opts?.method;
+    return jsonResponse(200, { name: "accounts/999/developerRegistration", gcpIds: ["888"] });
+  });
+  t.after(() => mock.restoreAll());
+
+  const result = await datasourceService.getAccountForGcpRegistration("tok");
+  assert.equal(calledUrl, "https://merchantapi.googleapis.com/accounts/v1/accounts:getAccountForGcpRegistration");
+  assert.equal(calledMethod, undefined, "GET is the default fetch method — no method override needed");
+  assert.deepEqual(result, { name: "accounts/999/developerRegistration", gcpIds: ["888"] });
+});
+
+test("getAccountForGcpRegistration: a non-ok response throws with status/body attached, same convention as every other call in this file", async (t) => {
+  mock.method(global, "fetch", async () => jsonResponse(401, { error: { message: "invalid credentials" } }));
+  t.after(() => mock.restoreAll());
+
+  await assert.rejects(
+    () => datasourceService.getAccountForGcpRegistration("tok"),
+    (err) => {
+      assert.equal(err.status, 401);
+      return true;
+    },
+  );
+});

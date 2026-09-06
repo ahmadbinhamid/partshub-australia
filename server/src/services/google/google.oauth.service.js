@@ -52,21 +52,25 @@ function assertConfigured() {
 // reconsented like this), silently omitting it on a repeat authorization
 // otherwise, which would leave a reconnect attempt with no way to get a new
 // refresh_token if the old one had been revoked.
-// merchantId/feedLabel/contentLanguage/targetCountry: Google's OAuth
-// consent has no equivalent of eBay's "one application, tenant just
-// authorizes it" simplicity — a Merchant Center account id and feed
-// settings are tenant-chosen inputs, not something OAuth hands back. They
-// travel inside the signed state (same mechanism eBay uses for its own
-// `sandbox` flag) so the callback has them without a second round trip or
-// a separate "finish setting up" step after redirect.
-function buildConsentUrl({ tenantId, merchantId, feedLabel, contentLanguage, targetCountry }) {
+//
+// TASK 4: consent now happens FIRST, before the tenant has chosen a
+// Merchant Center account at all — merchantId/feedLabel/contentLanguage/
+// targetCountry used to travel inside this signed state (the only way the
+// callback could otherwise learn them, since Google's OAuth response never
+// carries them), which forced the tenant to type a Merchant Center ID
+// (typo-prone, and a wrong one either failed confusingly or silently
+// pointed at the wrong account) before ever seeing which accounts the
+// token they're about to grant can actually reach. State now carries only
+// `tenant_id` + `purpose` — the CSRF-relevant part of this mechanism (a
+// signed, time-limited, purpose-checked token round-tripped through
+// Google, verified on the way back — see resolveState below) is completely
+// unchanged, just smaller. Account selection moves to AFTER consent — see
+// listAccessibleAccounts/completeConnection below.
+function buildConsentUrl({ tenantId }) {
   assertConfigured();
-  if (!merchantId || !feedLabel || !contentLanguage || !targetCountry) {
-    throw new Error("merchantId, feedLabel, contentLanguage and targetCountry are all required to connect Google Shopping");
-  }
 
   const state = signJwt(
-    { tenant_id: String(tenantId), merchant_id: merchantId, feed_label: feedLabel, content_language: contentLanguage, target_country: targetCountry, purpose: OAUTH_STATE_PURPOSE },
+    { tenant_id: String(tenantId), purpose: OAUTH_STATE_PURPOSE },
     { expiresIn: OAUTH_STATE_TTL },
   );
 
@@ -90,13 +94,7 @@ function resolveState(state) {
   if (!state) throw new Error("Missing OAuth state");
   const payload = verifyJwt(state);
   if (payload.purpose !== OAUTH_STATE_PURPOSE) throw new Error("Invalid OAuth state");
-  return {
-    tenantId: payload.tenant_id,
-    merchantId: payload.merchant_id,
-    feedLabel: payload.feed_label,
-    contentLanguage: payload.content_language,
-    targetCountry: payload.target_country,
-  };
+  return { tenantId: payload.tenant_id };
 }
 
 // Wraps a fetch Response's failure into an Error carrying `.status` so the
@@ -235,29 +233,99 @@ async function getValidAccessToken(connection) {
   return accessToken;
 }
 
-// Finishes the connect flow after a successful OAuth callback: exchanges
-// the code, ensures the tenant's Merchant API data source exists (Task 2 —
-// "a data source must exist before any product push... during connect, not
-// lazily on first sync"), and persists the resulting ChannelConnection.
-// Kept here (the service layer), not in google.controller.js, per this
-// codebase's DB-access-belongs-in-a-service convention — the controller
-// just calls this one function and handles the HTTP redirect.
-async function completeConnection({ tenantId, code, merchantId, feedLabel, contentLanguage, targetCountry }) {
+// TASK 4, step 1 of 2: runs right after the OAuth redirect lands back —
+// exchanges the code and saves JUST the token, under a PENDING connection
+// row. Nothing Merchant-Center-specific has been chosen yet (that's the
+// whole point of reordering this flow), so there's no data source to
+// create and no merchant_id to store yet — completeConnection below does
+// that once the tenant has actually picked an account.
+async function savePendingConnection({ tenantId, code }) {
   const { accessToken, refreshToken, expiresIn } = await exchangeCodeForTokens(code);
-  const { ensureDataSource } = require("./google.datasource.service");
-  const dataSourceId = await ensureDataSource(accessToken, { merchantId, feedLabel, contentLanguage });
 
   const { ciphertext: aC, iv: aIv, tag: aTag } = encrypt(accessToken);
   const { ciphertext: rC, iv: rIv, tag: rTag } = encrypt(refreshToken);
+
+  await ChannelConnection.findOneAndUpdate(
+    { tenant_id: tenantId, platform: PLATFORM },
+    {
+      $set: {
+        status: CHANNEL_CONNECTION_STATUS.PENDING,
+        access_token_ct: packCiphertext({ ciphertext: aC, iv: aIv, tag: aTag }),
+        refresh_token_ct: packCiphertext({ ciphertext: rC, iv: rIv, tag: rTag }),
+        token_expires_at: new Date(Date.now() + expiresIn * 1000),
+        last_error: null,
+      },
+      $setOnInsert: { tenant_id: tenantId, platform: PLATFORM },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+
+  logger.info("[google.oauth] OAuth consent completed, awaiting account selection", { tenantId: String(tenantId) });
+}
+
+// Shared by listAccessibleAccounts and completeConnection below: both need
+// a valid access token for whatever connection (pending OR already
+// connected — reconnect/switch-account re-uses this same path) this tenant
+// currently has on file. Throws a clear, named error if there's nothing to
+// load from — both callers require the OAuth step to have already run.
+async function loadTokenForTenant(tenantId) {
+  const conn = await ChannelConnection.findOne({ tenant_id: tenantId, platform: PLATFORM })
+    .select("+access_token_ct +refresh_token_ct")
+    .lean();
+  if (!conn) {
+    const err = new Error("No Google OAuth session found for this tenant — start the connect flow first.");
+    err.status = 400;
+    err.code = "NO_PENDING_CONNECTION";
+    throw err;
+  }
+  return getValidAccessToken(conn);
+}
+
+// TASK 4: lists the Merchant Center accounts the just-granted token can
+// access, for the tenant to pick from instead of typing a Merchant Center
+// ID blind. Thin pass-through to google.datasource.service.js#listAccounts
+// (kept there, not duplicated here, alongside registerGcp/
+// getAccountForGcpRegistration — every raw accounts/v1 HTTP call lives in
+// one place).
+async function listAccessibleAccounts(tenantId) {
+  const token = await loadTokenForTenant(tenantId);
+  const { listAccounts } = require("./google.datasource.service");
+  return listAccounts(token);
+}
+
+// TASK 4, step 2 of 2: the tenant has now picked a Merchant Center account
+// (+ confirmed/overridden feed settings) — ensures the data source exists
+// (Task 2 — "a data source must exist before any product push... during
+// connect, not lazily on first sync") and upgrades the PENDING connection
+// to CONNECTED. No `code` here any more — the token was already saved by
+// savePendingConnection above; this just loads and reuses it (refreshing
+// first if it's gone stale between the two steps).
+//
+// `verifiedAccountIds`: when the caller already has a fresh
+// listAccessibleAccounts() result (the normal dropdown path), pass its
+// account ids here so a mismatched merchantId is rejected BEFORE ever
+// calling ensureDataSource — belt-and-suspenders on top of ensureDataSource
+// itself naturally failing for an inaccessible account. Omit entirely
+// (undefined, not an empty array) for the manual-entry fallback path (see
+// google.controller.js#completeConnect) where accounts.list itself wasn't
+// usable — an empty array here would incorrectly reject every merchantId.
+async function completeConnection({ tenantId, merchantId, feedLabel, contentLanguage, targetCountry, verifiedAccountIds }) {
+  if (verifiedAccountIds && !verifiedAccountIds.includes(String(merchantId))) {
+    const err = new Error(`This Google account does not have access to Merchant Center account ${merchantId}.`);
+    err.status = 400;
+    err.code = "MERCHANT_NOT_ACCESSIBLE";
+    throw err;
+  }
+
+  const accessToken = await loadTokenForTenant(tenantId);
+  const { ensureDataSource } = require("./google.datasource.service");
+  const dataSourceId = await ensureDataSource(accessToken, { merchantId, feedLabel, contentLanguage });
 
   const conn = await ChannelConnection.findOneAndUpdate(
     { tenant_id: tenantId, platform: PLATFORM },
     {
       $set: {
         status: CHANNEL_CONNECTION_STATUS.CONNECTED,
-        access_token_ct: packCiphertext({ ciphertext: aC, iv: aIv, tag: aTag }),
-        refresh_token_ct: packCiphertext({ ciphertext: rC, iv: rIv, tag: rTag }),
-        token_expires_at: new Date(Date.now() + expiresIn * 1000),
         connected_at: new Date(),
         last_error: null,
         consecutive_failures: 0,
@@ -267,7 +335,6 @@ async function completeConnection({ tenantId, code, merchantId, feedLabel, conte
         content_language: contentLanguage,
         target_country: targetCountry,
       },
-      $setOnInsert: { tenant_id: tenantId, platform: PLATFORM },
     },
     // merchant_id/data_source_id/feed_label/content_language/target_country
     // are Google-discriminator-only fields (declared on the google schema
@@ -276,8 +343,13 @@ async function completeConnection({ tenantId, code, merchantId, feedLabel, conte
     // anything it doesn't recognize under Mongoose's default strict mode.
     // Same fix, same reasoning as ebay.adapter.js#updateSyncBaseline's own
     // strict: false — kept consistent with that established pattern rather
-    // than switching to ChannelConnection.discriminators[...].
-    { upsert: true, new: true, setDefaultsOnInsert: true, strict: false },
+    // than switching to ChannelConnection.discriminators[...]. No upsert
+    // here (unlike savePendingConnection) — completeConnection always
+    // expects the PENDING row savePendingConnection already created; a
+    // missing row means the tenant skipped straight to this call, which is
+    // itself worth surfacing as null rather than silently creating a
+    // connection with no token history.
+    { new: true, strict: false },
   );
 
   logger.info("[google.oauth] Tenant connected via OAuth", { tenantId: String(tenantId), merchantId, dataSourceId });
@@ -289,6 +361,8 @@ module.exports = {
   resolveState,
   exchangeCodeForTokens,
   getValidAccessToken,
+  savePendingConnection,
+  listAccessibleAccounts,
   completeConnection,
   // Exported for tests (concurrent-refresh race coverage).
   refreshAccessToken,

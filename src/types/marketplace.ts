@@ -124,6 +124,34 @@ export interface GoogleListing extends MarketplaceListing {
 // reading a platform-specific field.
 export type AnyMarketplaceListing = EbayListing | GoogleListing;
 
+// TASK 6 (regroup the listings page by product) — the ?group_by=product
+// shape of GET /listings (listing.query.service.js#listListingsGroupedByProduct):
+// one row per product, with all of that product's listings nested. Kept
+// deliberately smaller than AnyMarketplaceListing — just enough for the
+// grouped table's collapsed + expanded rows (platform/status/date/actions)
+// — a platform-specific field only the edit modal needs (Google's gtin/mpn/
+// condition/etc.) is fetched on demand via the existing getListing(id) call
+// when the tenant actually opens Edit, rather than growing this shape to
+// carry every platform's every field for every row on the list page.
+export interface GroupedListingSummary {
+  _id: string;
+  platform: MarketplacePlatform;
+  state: ListingState;
+  sync_status: ListingSyncStatus;
+  synced_at: string | null;
+  sync_error: string | null;
+  external_listing_id: string | null;
+  condition: string | null;
+  store_sku: string | null;
+  updated_at: string;
+  ebay_item_url?: string | null;
+}
+
+export interface ProductListingGroup {
+  product: MarketplaceListingProduct | null;
+  listings: GroupedListingSummary[];
+}
+
 // Editable fields for the Google "lightweight toggle" flow — see
 // components/listings/GoogleListingEditModal.tsx.
 export interface GoogleListingFormState {

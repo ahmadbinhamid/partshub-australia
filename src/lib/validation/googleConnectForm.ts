@@ -12,11 +12,16 @@ export const GOOGLE_TARGET_COUNTRIES = [
   { value: "CA", label: "Canada (CAD)" },
 ] as const;
 
-export const googleConnectFormSchema = z.object({
-  merchantId: z.string().trim().min(1, "Merchant Center ID is required"),
-  feedLabel: z.string().trim().min(1, "Feed label is required"),
-  contentLanguage: z.string().trim().min(1, "Content language is required"),
+// TASK 4: step 2 of the connect flow (after OAuth consent) — merchantId is
+// either the account chosen from the dropdown or, only when accounts.list
+// wasn't usable for this token, typed in manually. feedLabel/contentLanguage
+// are optional here too (server defaults them the same way) — an empty
+// string is treated the same as "use the default", not a validation error.
+export const googleCompleteConnectFormSchema = z.object({
+  merchantId: z.string().trim().min(1, "Choose (or enter) a Merchant Center account"),
   targetCountry: z.string().trim().min(1, "Target country is required"),
+  feedLabel: z.string().trim().optional(),
+  contentLanguage: z.string().trim().optional(),
 });
 
-export type GoogleConnectFormValues = z.infer<typeof googleConnectFormSchema>;
+export type GoogleCompleteConnectFormValues = z.infer<typeof googleCompleteConnectFormSchema>;

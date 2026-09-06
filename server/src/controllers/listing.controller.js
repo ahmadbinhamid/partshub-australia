@@ -14,9 +14,9 @@ const { success, notFound, systemfailure } = require("../utils/http/response");
 exports.getListings = async (req, res) => {
   try {
     const { page, limit, skip } = req.pagination;
-    const { product, product_in, platform, state, sync_status, search } = req.query;
+    const { product, product_in, platform, state, sync_status, search, group_by } = req.query;
 
-    const { items, total } = await listingQueryService.listListings(
+    const args = [
       {
         skip,
         limit,
@@ -28,7 +28,16 @@ exports.getListings = async (req, res) => {
         search,
       },
       req.tenantId,
-    );
+    ];
+
+    // TASK 6: ?group_by=product returns one row per product (with all of
+    // its listings nested) instead of one row per listing — everything
+    // else about the request (filters, pagination, tenant scoping) is
+    // identical; only which service function shapes the response differs.
+    const { items, total } =
+      group_by === "product"
+        ? await listingQueryService.listListingsGroupedByProduct(...args)
+        : await listingQueryService.listListings(...args);
 
     return success(res, {
       items,

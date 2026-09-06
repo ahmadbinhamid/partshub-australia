@@ -1,18 +1,35 @@
 // Google Shopping (Merchant API) connect flow — mirrors types/ebaySettings.ts's
-// shape. Unlike eBay, Google's OAuth consent has no equivalent of "one
-// application, tenant just authorizes it": a Merchant Center account id and
-// feed settings are tenant-chosen inputs the backend needs up front (see
-// services/google/google.oauth.service.js#buildConsentUrl's own comment),
-// not something OAuth hands back — so there is no GET /google/settings to
-// pre-fill from yet, only the connect-url call itself.
-
-export interface GoogleConnectUrlParams {
-  merchantId: string;
-  feedLabel: string;
-  contentLanguage: string;
-  targetCountry: string;
-}
+// shape. TASK 4: consent now happens FIRST, with no merchant fields needed
+// up front — see server/docs/channel-architecture.md §9 (connect flow) and
+// services/google/google.oauth.service.js's own module comments for why.
+// The tenant picks a Merchant Center account from a dropdown (or, if that
+// isn't available for this token, types one in) only AFTER granting
+// consent — GoogleConnectAccount/GoogleAccountsResponse/GoogleCompleteConnectPayload
+// below are that second step.
 
 export interface GoogleConnectUrlResponse {
   url: string;
+}
+
+export interface GoogleConnectAccount {
+  accountId: string;
+  accountName: string | null;
+}
+
+export interface GoogleAccountsResponse {
+  accounts: GoogleConnectAccount[];
+  // false when accounts.list itself wasn't usable for this token (see
+  // google.controller.js#getAccounts) — the UI falls back to a manual
+  // Merchant Center ID field rather than a dropdown when this is false.
+  listSupported: boolean;
+  message?: string;
+}
+
+export interface GoogleCompleteConnectPayload {
+  merchantId: string;
+  targetCountry: string;
+  // Optional — google.controller.js#completeConnect defaults these
+  // server-side (targetCountry / "en") when omitted.
+  feedLabel?: string;
+  contentLanguage?: string;
 }

@@ -52,12 +52,31 @@ function resolveListing(listing, product, variant = null) {
   };
 }
 
+// Reads adapter.manifest.requiresStorefront for `platform` off the
+// registry — never assumed, always looked up, so this stays correct if a
+// future adapter's manifest changes without anyone remembering to update
+// this file. Returns null (not a throw) for an unregistered/unknown
+// platform — resolveProductUrl below treats that the same as "no
+// requirement", since a platform not even registered obviously can't be
+// the one enforcing anything here.
+function getPlatformManifest(platform) {
+  const registry = require("./registry");
+  if (!platform || !registry.has(platform)) return null;
+  return registry.get(platform).manifest;
+}
+
 // Resolves a product's public, canonical storefront URL — needed by any
 // feed-shaped channel that requires a `link` field (Google Shopping today;
 // Meta Shop later). Additive: eBay never calls this.
 //
 // The storefront (pha-storefront) is a SEPARATE repo, not this one — its
 // product route is `/product/:slug` (singular — see its src/App.tsx).
+//
+// `platform` is REQUIRED — every real caller (google.adapter.js's two call
+// sites) always has one, and this function needs it to know whether the
+// linkDomain fallback below is even allowed for that platform at all. Fail
+// loudly on a caller that forgets it, rather than silently skipping the
+// requiresStorefront check for whoever omits it.
 //
 // Host resolution, in order:
 //   1. The tenant's DEFAULT verified Domain (models/Domain.js — is_default:
@@ -73,21 +92,32 @@ function resolveListing(listing, product, variant = null) {
 //      setting (that field controls payment-link hosting specifically, not
 //      the storefront). Hyphens are stripped from the slug for the same
 //      reason buildPaymentBaseUrl strips them — see that function's own
-//      comment.
-// Throws — never guesses — only when NEITHER of those resolves to
-// something real: no verified default Domain AND no PAYMENT_LINK_DOMAIN
-// configured at all (linkDomain unset, e.g. local dev with no domain set
-// up either). tenant.slug itself is a required, always-present field
-// (models/Tenant.js), so once linkDomain is configured this fallback is
-// always resolvable — the only other failure mode guarded here is the
-// tenant record itself somehow not resolving at all (deleted mid-request).
+//      comment. NOT offered at all to a platform whose manifest declares
+//      `requiresStorefront: true` (see channel.service.js#checkStorefrontRequirement,
+//      which already refuses to even let such a tenant CONNECT without a
+//      verified Domain) — a shared subdomain of this platform's own domain
+//      is not something the tenant could claim/verify ownership of with
+//      Google, so it was never a legitimate storefront for that channel;
+//      letting it through here would have quietly contradicted that
+//      connect-time guard for any tenant who got connected some other way
+//      (e.g. before the guard existed, or via direct DB access).
+// Throws — never guesses — when neither a verified default Domain NOR (for
+// a platform that's allowed to use it) the linkDomain fallback resolves to
+// something real. tenant.slug itself is a required, always-present field
+// (models/Tenant.js), so once linkDomain is configured (and allowed) that
+// fallback is always resolvable — the only other failure mode guarded here
+// is the tenant record itself somehow not resolving at all (deleted
+// mid-request).
 //
 // Product.slug is NOT a required field (models/Product.js) — a product
 // with none fails loudly, naming the SKU, rather than building a URL with
 // an empty/undefined path segment.
-async function resolveProductUrl(tenantId, productSlug, sku) {
+async function resolveProductUrl(tenantId, productSlug, sku, platform) {
   if (!productSlug) {
     throw new Error(`Product (SKU ${sku ?? "unknown"}) has no slug — cannot build a public product URL`);
+  }
+  if (!platform) {
+    throw new Error("resolveProductUrl: platform is required (needed to check requiresStorefront before allowing the linkDomain fallback)");
   }
 
   const Domain = require("../../models/Domain");
@@ -99,9 +129,19 @@ async function resolveProductUrl(tenantId, productSlug, sku) {
     .select("hostname")
     .lean();
 
+  const manifest = getPlatformManifest(platform);
+  const platformName = manifest?.name || platform;
+
   let host;
   if (domain) {
     host = domain.hostname;
+  } else if (manifest?.requiresStorefront) {
+    throw new Error(
+      `No verified default domain for tenant ${tenantId} — ${platformName} requires a real, claimed-and-verified ` +
+        `storefront domain and cannot fall back to a shared ${config.payment.linkDomain || "PAYMENT_LINK_DOMAIN"} ` +
+        `subdomain (that's this platform's own domain, not one the tenant can verify ownership of with ${platformName}). ` +
+        `Connect and verify a domain under Settings > Domains before connecting ${platformName}.`,
+    );
   } else if (config.payment.linkDomain) {
     const tenant = await Tenant.findById(tenantId).select("slug").lean();
     if (!tenant?.slug) {
@@ -111,7 +151,7 @@ async function resolveProductUrl(tenantId, productSlug, sku) {
   } else {
     throw new Error(
       `No verified default domain and no PAYMENT_LINK_DOMAIN fallback configured for tenant ${tenantId} — ` +
-        `cannot build a public product URL (required for Google Shopping's "link" field). Set a default ` +
+        `cannot build a public product URL (required for ${platformName}'s "link" field). Set a default ` +
         `verified domain under Settings > Domains, or configure PAYMENT_LINK_DOMAIN.`,
     );
   }

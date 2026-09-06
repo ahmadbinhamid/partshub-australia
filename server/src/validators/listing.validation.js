@@ -20,6 +20,13 @@ const listListings = {
     state: Joi.string().valid(...Object.values(LISTING_STATE)),
     sync_status: Joi.string().valid(...Object.values(LISTING_SYNC_STATUS)),
     search: Joi.string().allow(""),
+    // TASK 6: one row per PRODUCT (with all of that product's listings
+    // nested under it) instead of one row per listing — see
+    // listing.query.service.js#listListingsGroupedByProduct. A query flag
+    // on the existing endpoint rather than a new route, so every existing
+    // caller of GET /listings (omitting this) keeps the unchanged,
+    // one-row-per-listing response shape.
+    group_by: Joi.string().valid("product"),
   }),
 };
 

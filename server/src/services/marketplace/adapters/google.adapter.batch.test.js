@@ -9,7 +9,7 @@
 //   node --test src/services/marketplace/adapters/google.adapter.batch.test.js
 
 const test = require("node:test");
-const { mock } = require("node:test");
+const { mock, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const mongoose = require("mongoose");
 const crypto = require("node:crypto");
@@ -17,6 +17,7 @@ const config = require("../../../config");
 
 require("../../../models/index");
 const Product = require("../../../models/Product");
+const Attachment = require("../../../models/Attachment");
 const Location = require("../../../models/Location");
 const Inventory = require("../../../models/Inventory");
 const Domain = require("../../../models/Domain");
@@ -41,6 +42,24 @@ function jsonResponse(status, body) {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
 
+// TASK 1 (this run): a zero-photo product is now rejected the same way a
+// bad-URL one is (see google.adapter.js#buildProductInputFromResolved's own
+// comment) — makeTenantWithListings below gives every product a real
+// Attachment so sync.service.js#syncBatch's own real Mongoose population
+// resolves an actual usable image, exercising the real success path rather
+// than the (now-rejected) photo-less one. Attachment.url is a virtual built
+// from config.uploads.url (utils/attachment.js#buildAttachmentUrl) — this
+// env's real UPLOADS_URL is plain http://, so it's overridden to a fake
+// https:// host for the life of this file, restored after.
+let originalUploadsUrl;
+before(() => {
+  originalUploadsUrl = config.uploads.url;
+  config.uploads.url = "https://cdn.example.com";
+});
+after(() => {
+  config.uploads.url = originalUploadsUrl;
+});
+
 async function makeTenantWithListings(count) {
   const suffix = crypto.randomUUID();
   const tenantId = new mongoose.Types.ObjectId();
@@ -57,6 +76,12 @@ async function makeTenantWithListings(count) {
 
   const listings = [];
   for (let i = 0; i < count; i++) {
+    const attachment = await Attachment.create({
+      tenant_id: tenantId,
+      uid: `batch-photo-${i}-${suffix}`,
+      file_name: `batch-photo-${i}-${suffix}.jpg`,
+      type: "image",
+    });
     const product = await Product.create({
       tenant_id: tenantId,
       title: `Batch product ${i} ${suffix}`,
@@ -64,6 +89,7 @@ async function makeTenantWithListings(count) {
       sku: `BATCH-${i}-${suffix}`,
       status: "active",
       stock_control: true,
+      attachments: [attachment._id],
     });
     await Inventory.create({ product: product._id, variant: null, location: location._id, stock_count: 3 });
     const listing = await MarketplaceListing.create({
@@ -118,7 +144,9 @@ test("publishBatch: a per-item failure is isolated — the rest of the batch sti
 
   const settings = await googleAdapter.loadSettings(tenantId);
   const resolvedList = await Promise.all(
-    listings.map(({ listing, product }) => resolveListing(listing, { ...product.toObject(), attachments: [] }, null)),
+    listings.map(({ listing, product }) =>
+      resolveListing(listing, { ...product.toObject(), attachments: [{ type: "image", url: "https://cdn.example.com/photo.jpg" }] }, null),
+    ),
   );
 
   const results = await googleAdapter.publishBatch(resolvedList, settings);

@@ -82,6 +82,21 @@ test("sync_listing fencing: a legacy document with NO last_pushed_seq field at a
   });
   const listingId = insertResult.insertedId.toString();
 
+  // Cleanup — this file's ids were already randomized (see the module
+  // comment above) so a leftover row was never going to collide with a
+  // future run, but nothing here was ever actually deleted either; that's
+  // still unbounded growth in a shared database for no reason. Hard-delete
+  // (matching the raw insert above, which bypassed Mongoose/soft-delete
+  // too) rather than soft-delete. One combined `t.after` (delete THEN
+  // disconnect, explicitly sequenced) rather than two separate hooks —
+  // Node's test runner doesn't document an ordering guarantee across
+  // multiple `t.after` calls on the same test worth relying on.
+  t.after(async () => {
+    await mongoose.connection.db.collection("marketplacelistings").deleteOne({ _id: insertResult.insertedId });
+    await Product.deleteOne({ _id: product._id });
+    await mongoose.disconnect();
+  });
+
   const raw = await mongoose.connection.db.collection("marketplacelistings").findOne({ _id: insertResult.insertedId });
   assert.equal(raw.last_pushed_seq, undefined, "sanity check: the raw stored doc must have no last_pushed_seq field");
 
@@ -97,6 +112,4 @@ test("sync_listing fencing: a legacy document with NO last_pushed_seq field at a
   const freshResult = await syncListing(listingId, 1);
   assert.equal(freshResult.ok, true);
   assert.equal(updateSpy.mock.callCount(), callsBefore + 1, "a fresh-seq job must call the adapter even for a legacy document");
-
-  await mongoose.disconnect();
 });

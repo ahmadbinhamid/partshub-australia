@@ -51,10 +51,18 @@ apiClient.interceptors.response.use(
     const error = new Error(message) as Error & {
       status?: number;
       errors?: Array<{ field: string; message: string }>;
+      reason?: string;
     };
     error.status = status;
     if (status === 422 && Array.isArray(err.response?.data?.errors)) {
       error.errors = err.response.data.errors;
+    }
+    // Some 400s carry a machine-readable `reason` alongside `message` (e.g.
+    // google.controller.js#completeConnect's GCP_REGISTRATION_PENDING/
+    // CONFLICT/MERCHANT_NOT_ACCESSIBLE cases) so a caller can show a
+    // specific friendly message instead of just the raw error text.
+    if (typeof err.response?.data?.reason === "string") {
+      error.reason = err.response.data.reason;
     }
     return Promise.reject(error);
   },

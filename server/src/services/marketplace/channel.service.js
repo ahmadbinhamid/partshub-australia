@@ -10,6 +10,29 @@ const MarketplaceListing = require("../../models/MarketplaceListing");
 const { enqueueChannelJob } = require("../../queues/channel.queue");
 const { CHANNEL_CONNECTION_STATUS } = require("../../constants/channel.constants");
 
+function storefrontUnavailableReason(manifestName) {
+  return `${manifestName} requires a verified storefront domain — connect and verify one under Settings > Domains before connecting ${manifestName}.`;
+}
+
+// TASK 5 (requiresStorefront capability): generic, platform-agnostic check
+// — driven entirely by the adapter's own `manifest.requiresStorefront` flag
+// (registry.js's own header documents the contract), not a Google-specific
+// branch. A future Meta Shop adapter that also sets `requiresStorefront:
+// true` needs ZERO new code here or at any of this function's call sites
+// (listChannelsForTenant below, google.controller.js#getConnectUrl) — same
+// "generic layer, platform-specific code just calls it" shape as
+// circuitBreaker.js / registry.js everywhere else in this file.
+async function checkStorefrontRequirement(tenantId, platform) {
+  const adapter = registry.get(platform);
+  if (!adapter.manifest?.requiresStorefront) return { ok: true };
+
+  const domainService = require("../domain.service");
+  const hasDomain = await domainService.hasVerifiedDefaultDomain(tenantId);
+  if (hasDomain) return { ok: true };
+
+  return { ok: false, reason: storefrontUnavailableReason(adapter.manifest.name) };
+}
+
 // Every registered adapter's manifest, merged with this tenant's own
 // connection status/health/listing counts for it — the catalogue view GET
 // /api/v1/channels renders (connected AND not-yet-connected platforms both
@@ -18,12 +41,19 @@ const { CHANNEL_CONNECTION_STATUS } = require("../../constants/channel.constants
 async function listChannelsForTenant(tenantId) {
   const manifests = registry.list();
 
-  const [connections, listingCounts] = await Promise.all([
+  // Storefront-verification is the SAME check regardless of which (if any)
+  // manifest needs it, so it's resolved once for this tenant — never a
+  // per-manifest query — and only actually run at all if at least one
+  // registered platform sets requiresStorefront (today: Google only; eBay
+  // never triggers this query).
+  const anyRequiresStorefront = manifests.some((m) => m.requiresStorefront);
+  const [connections, listingCounts, hasVerifiedDomain] = await Promise.all([
     ChannelConnection.find({ tenant_id: tenantId }).lean(),
     MarketplaceListing.aggregate([
       { $match: { tenant_id: tenantId } },
       { $group: { _id: { platform: "$platform", sync_status: "$sync_status" }, count: { $sum: 1 } } },
     ]),
+    anyRequiresStorefront ? require("../domain.service").hasVerifiedDefaultDomain(tenantId) : Promise.resolve(true),
   ]);
 
   const connByPlatform = new Map(connections.map((c) => [c.platform, c]));
@@ -38,9 +68,17 @@ async function listChannelsForTenant(tenantId) {
     const adapter = registry.get(manifest.key);
     const conn = connByPlatform.get(manifest.key) || null;
 
+    // TASK 5: a channel a tenant can't actually use (missing storefront
+    // requirement) is marked unavailable with a human-readable reason,
+    // rather than letting them connect and silently get every product
+    // disapproved — see checkStorefrontRequirement's own comment.
+    const storefrontOk = !manifest.requiresStorefront || hasVerifiedDomain;
+
     return {
       ...manifest,
       capabilities: adapter.capabilities,
+      available: storefrontOk,
+      unavailable_reason: storefrontOk ? null : storefrontUnavailableReason(manifest.name),
       connection: {
         status: conn?.status || CHANNEL_CONNECTION_STATUS.DISCONNECTED,
         connected_at: conn?.connected_at || null,
@@ -89,4 +127,4 @@ async function retryChannelLog(tenantId, platform, logId) {
   return { requeued: true, listingId: log.entity_id.toString() };
 }
 
-module.exports = { listChannelsForTenant, getChannelLogs, retryChannelLog };
+module.exports = { listChannelsForTenant, getChannelLogs, retryChannelLog, checkStorefrontRequirement };

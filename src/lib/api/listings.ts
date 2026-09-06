@@ -1,6 +1,12 @@
 import { apiClient } from "./client";
 import type { BeResponse, PaginatedData } from "./base";
-import type { AnyMarketplaceListing, EbayListing, EbayListingFormState, MarketplacePlatform } from "@/types/marketplace";
+import type {
+  AnyMarketplaceListing,
+  EbayListing,
+  EbayListingFormState,
+  MarketplacePlatform,
+  ProductListingGroup,
+} from "@/types/marketplace";
 import type { ProductVehicle } from "@/types/product";
 import { generateListingHtml } from "@/components/listings/platforms/ebay/ebayDescriptionGenerator";
 import { getTenantSettings } from "@/lib/api/tenantSettings";
@@ -106,6 +112,16 @@ export const updateListing = async (
 // own module header for why only create/update stay per-platform).
 export const getListings = async (params: ListingListParams = {}) => {
   const { data } = await apiClient.get<BeResponse<PaginatedData<AnyMarketplaceListing>>>("/listings", { params });
+  return data;
+};
+
+// TASK 6: same endpoint, `?group_by=product` — one row per product instead
+// of one per listing (listing.query.service.js#listListingsGroupedByProduct).
+// Same query params otherwise (pagination/filters/search all still apply).
+export const getGroupedListings = async (params: ListingListParams = {}) => {
+  const { data } = await apiClient.get<BeResponse<PaginatedData<ProductListingGroup>>>("/listings", {
+    params: { ...params, group_by: "product" },
+  });
   return data;
 };
 

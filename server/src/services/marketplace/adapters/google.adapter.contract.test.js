@@ -69,10 +69,10 @@ test("applyIdentifiers: neither gtin nor a complete mpn+brand pair -> identifier
   assert.equal(attrs.mpn, undefined);
 });
 
-test("availabilityFor: quantity 0 -> out of stock; quantity > 0 -> in stock", () => {
-  assert.equal(googleAdapter.availabilityFor(0), "out of stock");
-  assert.equal(googleAdapter.availabilityFor(1), "in stock");
-  assert.equal(googleAdapter.availabilityFor(500), "in stock");
+test("availabilityFor: quantity 0 -> OUT_OF_STOCK; quantity > 0 -> IN_STOCK (v1 enum, not the old lowercase Content API strings)", () => {
+  assert.equal(googleAdapter.availabilityFor(0), "OUT_OF_STOCK");
+  assert.equal(googleAdapter.availabilityFor(1), "IN_STOCK");
+  assert.equal(googleAdapter.availabilityFor(500), "IN_STOCK");
 });
 
 test("buildProductResourceName / buildFullProductResourceName: contentLanguage~feedLabel~offerId shape (v1 — no channel segment)", () => {

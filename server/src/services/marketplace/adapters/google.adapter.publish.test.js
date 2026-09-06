@@ -182,7 +182,7 @@ test("google adapter: publish() with no identifiers at all sets identifierExists
   assert.equal(body.productAttributes.mpn, undefined);
 });
 
-test("google adapter: quantity 0 -> out of stock; quantity > 0 -> in stock", async (t) => {
+test("google adapter: quantity 0 -> OUT_OF_STOCK; quantity > 0 -> IN_STOCK (v1 enum)", async (t) => {
   await mongoose.connect(config.mongoUri);
   installFetchStub(VALID_MERCHANT_API_HANDLER);
   t.after(() => mongoose.disconnect());
@@ -193,7 +193,7 @@ test("google adapter: quantity 0 -> out of stock; quantity > 0 -> in stock", asy
   const resultZero = await googleAdapter.publish(resolvedZero, settingsZero, {}, null);
   assert.equal(resultZero.quantity, 0);
   let body = JSON.parse(fetchCalls[fetchCalls.length - 1].opts.body);
-  assert.equal(body.productAttributes.availability, "out of stock");
+  assert.equal(body.productAttributes.availability, "OUT_OF_STOCK");
 
   const some = await makeFixture({ stockCount: 7 });
   const settingsSome = await googleAdapter.loadSettings(some.tenantId);
@@ -201,7 +201,7 @@ test("google adapter: quantity 0 -> out of stock; quantity > 0 -> in stock", asy
   const resultSome = await googleAdapter.publish(resolvedSome, settingsSome, {}, null);
   assert.equal(resultSome.quantity, 7);
   body = JSON.parse(fetchCalls[fetchCalls.length - 1].opts.body);
-  assert.equal(body.productAttributes.availability, "in stock");
+  assert.equal(body.productAttributes.availability, "IN_STOCK");
 });
 
 test("google adapter: untracked stock (stock_control off) is skipped, never pushed as in_stock, no Merchant API call made", async (t) => {

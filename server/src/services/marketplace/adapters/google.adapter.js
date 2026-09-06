@@ -15,14 +15,17 @@
 // written without live Google credentials to verify against. Migrated to
 // v1 after v1beta was actually discontinued (2026-02-28) and a real connect
 // attempt surfaced it — see google.merchant.api.service.js and
-// google.datasource.service.js's own comments. The `channel` field removal
-// (ProductInput and PrimaryProductDataSource) and `gtin` -> `gtins` rename
-// were confirmed against real API responses and Google's own migration
-// docs during that fix. What's STILL not verified against a live call: the
-// rest of ProductAttributes' field names/enum casing (price, availability,
-// condition, shippingLabel, customLabel0-4, googleProductCategory) —
-// cross-check buildProductInputFromResolved's full payload against a real
-// successful productInputs.insert response before relying on those.
+// google.datasource.service.js's own comments. Confirmed against real API
+// responses/errors (not guessed) during that and subsequent live pushes:
+// `channel` field removal (ProductInput and PrimaryProductDataSource),
+// `gtin` -> `gtins` rename, and `availabilityFor`'s enum (a real
+// productInputs.insert rejected the old lowercase "in stock" with 400
+// INVALID_ARGUMENT — see that function's own comment for the fix). What's
+// STILL not verified against a live call: the rest of ProductAttributes'
+// field names/casing (price, condition, shippingLabel, customLabel0-4,
+// googleProductCategory) — cross-check buildProductInputFromResolved's full
+// payload against a real successful productInputs.insert response before
+// relying on those.
 
 const { logger } = require("../../../loaders/logging");
 const config = require("../../../config");
@@ -114,12 +117,17 @@ function buildFullProductResourceName(settings, sku) {
   return `accounts/${settings.merchant_id}/products/${buildProductResourceName(settings, sku)}`;
 }
 
-// Google's Availability values — the classic Content API used the literal
-// lowercase strings "in stock"/"out of stock" (not an ALL_CAPS enum); kept
-// here since that's the most-documented historical shape. See this file's
-// own module NOTE — verify against a live call before shipping.
+// Merchant API v1's Availability is a real ALL_CAPS enum (IN_STOCK /
+// OUT_OF_STOCK / PREORDER / LIMITED_AVAILABILITY / BACKORDER) — NOT the
+// classic Content API's literal lowercase strings ("in stock"/"out of
+// stock") this originally shipped with, based on that historical shape
+// without a live call to verify against (see this file's own module NOTE).
+// Confirmed live: a real productInputs.insert call rejected "in stock" with
+// 400 INVALID_ARGUMENT — cross-checked against Google's own generated
+// client library docs (google.shopping.merchant.products.v1.Availability)
+// to get the exact enum names, not guessed a second time.
 function availabilityFor(quantity) {
-  return quantity > 0 ? "in stock" : "out of stock";
+  return quantity > 0 ? "IN_STOCK" : "OUT_OF_STOCK";
 }
 
 // Decision 2 (identifiers): gtin when present; otherwise mpn+brand when

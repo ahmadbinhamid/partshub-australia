@@ -483,12 +483,15 @@ other resolution — not something to route around quietly in code.
 - **Untracked stock**: a product with `stock_control` off is excluded from
   Google entirely — enforced in the adapter (`isUntrackedStock`), signaled
   back to `sync.service.js` as `{ skipped: true, reason: "untracked_stock"
-  }` (see §11), never published as `in_stock`.
-- **Availability**: `quantity > 0` → `"in stock"`; `0` → `"out of stock"`
-  (the classic Content API's literal lowercase strings — most-documented
-  historical shape; **not verified against a live call**, see the
-  module-header `NOTE` in `google.adapter.js` and `google.merchant.api.service.js`
-  for what to check before this goes live).
+  }` (see §11), never published as `IN_STOCK`.
+- **Availability**: `quantity > 0` → `"IN_STOCK"`; `0` → `"OUT_OF_STOCK"` —
+  Merchant API v1's real ALL_CAPS enum. Originally shipped as the classic
+  Content API's literal lowercase strings ("in stock"/"out of stock", the
+  most-documented historical shape at the time, explicitly flagged as
+  unverified — see `google.adapter.js`'s own module `NOTE`); a real
+  `productInputs.insert` call confirmed that guess wrong (400
+  `INVALID_ARGUMENT` on the `availability` field) and it was fixed against
+  Google's own client library docs for the exact enum names.
 
 ### Services (`services/google/`)
 

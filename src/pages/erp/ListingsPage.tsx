@@ -20,13 +20,16 @@ import { FilterSelect } from "@/components/ui/FilterSelect";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { DEFAULT_PAGE_SIZE } from "@/config/pagination";
 import { getListing, getListings, updateListing, pushListing, deleteListing } from "@/lib/api/listings";
+import { updateGoogleListing } from "@/lib/api/googleListings";
 import { listingToForm, getListingFallbackImageUrl } from "@/lib/marketplace/listingToForm";
 import { useToast } from "@/context";
-import type { EbayListing } from "@/types/marketplace";
+import type { AnyMarketplaceListing, GoogleListing, GoogleListingFormState } from "@/types/marketplace";
 import type { Product } from "@/types/product";
 import { SyncBadge } from "@/components/listings/SyncBadge";
 import { ProductPickerModal } from "@/components/listings/ProductPickerModal";
 import { ListingRowActionsMenu } from "@/components/listings/ListingRowActionsMenu";
+import { GoogleListingEditModal } from "@/components/listings/GoogleListingEditModal";
+import { PLATFORM_LABEL } from "@/config/marketplacePlatforms";
 import { Plus, Cloud, Search } from "lucide-react";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -57,7 +60,8 @@ export default function ListingsPage() {
 
   // Local UI state (doesn't need to be in URL)
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<EbayListing | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AnyMarketplaceListing | null>(null);
+  const [googleEditTarget, setGoogleEditTarget] = useState<GoogleListing | null>(null);
   const [inputValue, setInputValue] = useState(search);
   const [productColWidth, setProductColWidth] = useState<number | null>(null);
 
@@ -124,7 +128,7 @@ export default function ListingsPage() {
       }),
   });
 
-  const listings: EbayListing[] = (data?.data?.items ?? []) as EbayListing[];
+  const listings: AnyMarketplaceListing[] = (data?.data?.items ?? []) as AnyMarketplaceListing[];
   const total = data?.data?.total ?? 0;
   const totalPages = data?.data?.totalPages ?? 1;
 
@@ -137,23 +141,37 @@ export default function ListingsPage() {
     !!deleteTarget?.external_offer_id || !!deleteTarget?.external_listing_id;
 
   const pushMutation = useMutation({
-    // Resave first so description_override is regenerated from current
+    // eBay: resave first so description_override is regenerated from current
     // product/listing data (e.g. the real photo) before eBay receives it —
     // pushing straight from here previously resent whatever HTML happened to
     // already be stored, which was stale for anything synced before a
-    // description-generator change.
-    mutationFn: async (id: string) => {
-      const { data: listing } = await getListing(id);
-      const vehicle =
-        listing.product !== null && typeof listing.product === "object"
-          ? listing.product.vehicle ?? null
-          : null;
-      await updateListing(id, listingToForm(listing), vehicle, getListingFallbackImageUrl(listing));
-      await pushListing(id);
+    // description-generator change. Google has no equivalent stale-snapshot
+    // problem (its adapter reads title/description/price/photos live off the
+    // product at sync time, not off a stored HTML blob) — just push.
+    mutationFn: async (listing: AnyMarketplaceListing) => {
+      if (listing.platform === "ebay") {
+        const { data: fresh } = await getListing(listing._id);
+        if (fresh.platform === "ebay") {
+          const vehicle =
+            fresh.product !== null && typeof fresh.product === "object" ? fresh.product.vehicle ?? null : null;
+          await updateListing(listing._id, listingToForm(fresh), vehicle, getListingFallbackImageUrl(fresh));
+        }
+      }
+      await pushListing(listing._id);
     },
-    onSuccess: () => {
-      toast({ title: "Queued for eBay sync", tone: "success" });
+    onSuccess: (_data, listing) => {
+      toast({ title: `Queued for ${PLATFORM_LABEL[listing.platform] ?? listing.platform} sync`, tone: "success" });
       queryClient.invalidateQueries({ queryKey: ["listings"] });
+    },
+    onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
+  });
+
+  const googleUpdateMutation = useMutation({
+    mutationFn: ({ id, form }: { id: string; form: GoogleListingFormState }) => updateGoogleListing(id, form),
+    onSuccess: () => {
+      toast({ title: "Google Shopping details saved", tone: "success" });
+      queryClient.invalidateQueries({ queryKey: ["listings"] });
+      setGoogleEditTarget(null);
     },
     onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
   });
@@ -240,16 +258,28 @@ export default function ListingsPage() {
                       ? listing.product
                       : null;
                   const productTitle = productObj?.title ?? "—";
-                  const sku = listing.store_sku || productObj?.sku || "—";
+                  // store_sku is eBay's own per-listing SKU override — every
+                  // other platform just falls back to the product's SKU.
+                  const sku = (listing.platform === "ebay" ? listing.store_sku : null) || productObj?.sku || "—";
                   const syncedAt = listing.synced_at
                     ? new Date(listing.synced_at).toLocaleDateString("en-AU")
                     : "—";
+
+                  // eBay's rich form lives at /listings/:id/edit; Google's
+                  // "lightweight toggle" listing has no equivalent page — it
+                  // edits via a small inline modal instead (see
+                  // GoogleListingEditModal). Add a future platform's own
+                  // edit-entry-point branch here the same way.
+                  const openEdit = () => {
+                    if (listing.platform === "google") setGoogleEditTarget(listing);
+                    else navigate(`/listings/${listing._id}/edit`);
+                  };
 
                   return (
                     <TableRow
                       key={listing._id}
                       className="group cursor-pointer"
-                      onClick={() => navigate(`/listings/${listing._id}/edit`)}
+                      onClick={openEdit}
                     >
                       <StickyTableCell
                         size={52}
@@ -260,9 +290,7 @@ export default function ListingsPage() {
                         {productTitle}
                       </StickyTableCell>
                       <TableCell>
-                        <Badge variant="outline" className="capitalize">
-                          {listing.platform}
-                        </Badge>
+                        <Badge variant="outline">{PLATFORM_LABEL[listing.platform] ?? listing.platform}</Badge>
                       </TableCell>
                       <TableCell className="text-fg/60">{sku}</TableCell>
                       <TableCell>
@@ -272,11 +300,12 @@ export default function ListingsPage() {
                       <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex justify-end">
                           <ListingRowActionsMenu
-                            onPush={() => pushMutation.mutate(listing._id)}
+                            platform={listing.platform}
+                            onPush={() => pushMutation.mutate(listing)}
                             pushDisabled={pushMutation.isPending}
-                            onEdit={() => navigate(`/listings/${listing._id}/edit`)}
+                            onEdit={openEdit}
                             onDelete={() => setDeleteTarget(listing)}
-                            ebayItemUrl={listing.ebay_item_url}
+                            externalUrl={listing.ebay_item_url}
                           />
                         </div>
                       </TableCell>
@@ -321,7 +350,8 @@ export default function ListingsPage() {
                   permanently removed.
                   {deleteListingIsLive && (
                     <span className="mt-1 block text-amber-500">
-                      This listing is live on eBay and will also be withdrawn.
+                      This listing is live on {PLATFORM_LABEL[deleteTarget.platform] ?? deleteTarget.platform} and
+                      will also be withdrawn.
                     </span>
                   )}
                 </>
@@ -352,6 +382,16 @@ export default function ListingsPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      <GoogleListingEditModal
+        listing={googleEditTarget}
+        open={!!googleEditTarget}
+        onClose={() => setGoogleEditTarget(null)}
+        onSave={(form) => {
+          if (googleEditTarget) googleUpdateMutation.mutate({ id: googleEditTarget._id, form });
+        }}
+        saving={googleUpdateMutation.isPending}
+      />
     </div>
   );
 }

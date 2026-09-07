@@ -19,15 +19,25 @@ import { Pagination } from "@/components/ui/Pagination";
 import { FilterSelect } from "@/components/ui/FilterSelect";
 import { PageHeader } from "@/components/shared/PageHeader";
 import { DEFAULT_PAGE_SIZE } from "@/config/pagination";
-import { getListing, getListings, updateListing, pushListing, deleteListing } from "@/lib/api/listings";
+import { getListing, getGroupedListings, updateListing, pushListing, deleteListing } from "@/lib/api/listings";
+import { createGoogleListing, updateGoogleListing } from "@/lib/api/googleListings";
 import { listingToForm, getListingFallbackImageUrl } from "@/lib/marketplace/listingToForm";
 import { useToast } from "@/context";
-import type { EbayListing } from "@/types/marketplace";
+import type {
+  GoogleListing,
+  GoogleListingFormState,
+  GroupedListingSummary,
+  MarketplacePlatform,
+  ProductListingGroup,
+} from "@/types/marketplace";
+import { GOOGLE_LISTING_FORM_INITIAL } from "@/types/marketplace";
 import type { Product } from "@/types/product";
 import { SyncBadge } from "@/components/listings/SyncBadge";
 import { ProductPickerModal } from "@/components/listings/ProductPickerModal";
 import { ListingRowActionsMenu } from "@/components/listings/ListingRowActionsMenu";
-import { Plus, Cloud, Search } from "lucide-react";
+import { GoogleListingEditModal } from "@/components/listings/GoogleListingEditModal";
+import { PLATFORM_LABEL, AVAILABLE_PLATFORMS } from "@/config/marketplacePlatforms";
+import { Plus, Cloud, Search, ChevronDown, ChevronRight } from "lucide-react";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -41,6 +51,20 @@ const SYNC_STATUS_FILTERS = [
   { label: "Not listed", value: "not_listed" },
 ];
 
+const PLATFORM_FILTERS = [
+  { label: "All channels", value: "" },
+  ...AVAILABLE_PLATFORMS.map((p) => ({ label: PLATFORM_LABEL[p] ?? p, value: p })),
+];
+
+// A row's deletion/push/edit target — deliberately just the pieces those
+// actions actually need (group for product context, the one listing
+// summary being acted on), rather than reconstructing a full
+// AnyMarketplaceListing client-side out of the grouped view's smaller shape.
+interface ListingActionTarget {
+  group: ProductListingGroup;
+  listing: GroupedListingSummary;
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ListingsPage() {
@@ -52,14 +76,27 @@ export default function ListingsPage() {
   // URL-synced state (survives refresh/back navigation)
   const search = searchParams.get("search") ?? "";
   const syncStatus = searchParams.get("sync_status") ?? "";
+  const platform = searchParams.get("platform") ?? "";
   const page = parseInt(searchParams.get("page") ?? "1", 10);
   const limit = parseInt(searchParams.get("limit") ?? String(DEFAULT_PAGE_SIZE), 10);
 
   // Local UI state (doesn't need to be in URL)
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<EbayListing | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ListingActionTarget | null>(null);
+  const [googleEditTarget, setGoogleEditTarget] = useState<GoogleListing | null>(null);
   const [inputValue, setInputValue] = useState(search);
   const [productColWidth, setProductColWidth] = useState<number | null>(null);
+  // TASK 6: which product rows are expanded to show their per-listing detail
+  // — a product on only one channel starts expanded automatically (nothing
+  // to collapse into), a product on multiple channels starts collapsed.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   // Debounce search
   useEffect(() => {
@@ -83,6 +120,19 @@ export default function ListingsPage() {
         const next = new URLSearchParams(prev);
         if (val) next.set("sync_status", val);
         else next.delete("sync_status");
+        next.set("page", "1");
+        return next;
+      }, { replace: true });
+    },
+    [setSearchParams],
+  );
+
+  const setPlatform = useCallback(
+    (val: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (val) next.set("platform", val);
+        else next.delete("platform");
         next.set("page", "1");
         return next;
       }, { replace: true });
@@ -114,46 +164,56 @@ export default function ListingsPage() {
   );
 
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ["listings", { page, limit, sync_status: syncStatus, search }],
+    queryKey: ["listings", "grouped", { page, limit, sync_status: syncStatus, platform, search }],
     queryFn: () =>
-      getListings({
+      getGroupedListings({
         page,
         limit,
         ...(syncStatus ? { sync_status: syncStatus } : {}),
+        ...(platform ? { platform: platform as MarketplacePlatform } : {}),
         ...(search ? { search } : {}),
       }),
   });
 
-  const listings: EbayListing[] = (data?.data?.items ?? []) as EbayListing[];
+  const groups: ProductListingGroup[] = data?.data?.items ?? [];
   const total = data?.data?.total ?? 0;
   const totalPages = data?.data?.totalPages ?? 1;
 
-  const deleteListingProduct =
-    deleteTarget?.product !== null && typeof deleteTarget?.product === "object"
-      ? (deleteTarget?.product as { title?: string })
-      : null;
-  const deleteListingName = deleteListingProduct?.title ?? "This listing";
-  const deleteListingIsLive =
-    !!deleteTarget?.external_offer_id || !!deleteTarget?.external_listing_id;
+  const deleteListingName = deleteTarget?.group.product?.title ?? "This listing";
+  const deleteListingIsLive = !!deleteTarget?.listing.external_listing_id;
 
   const pushMutation = useMutation({
-    // Resave first so description_override is regenerated from current
+    // eBay: resave first so description_override is regenerated from current
     // product/listing data (e.g. the real photo) before eBay receives it —
     // pushing straight from here previously resent whatever HTML happened to
     // already be stored, which was stale for anything synced before a
-    // description-generator change.
-    mutationFn: async (id: string) => {
-      const { data: listing } = await getListing(id);
-      const vehicle =
-        listing.product !== null && typeof listing.product === "object"
-          ? listing.product.vehicle ?? null
-          : null;
-      await updateListing(id, listingToForm(listing), vehicle, getListingFallbackImageUrl(listing));
-      await pushListing(id);
+    // description-generator change. Google has no equivalent stale-snapshot
+    // problem (its adapter reads title/description/price/photos live off the
+    // product at sync time, not off a stored HTML blob) — just push.
+    mutationFn: async ({ listing }: ListingActionTarget) => {
+      if (listing.platform === "ebay") {
+        const { data: fresh } = await getListing(listing._id);
+        if (fresh.platform === "ebay") {
+          const vehicle =
+            fresh.product !== null && typeof fresh.product === "object" ? fresh.product.vehicle ?? null : null;
+          await updateListing(listing._id, listingToForm(fresh), vehicle, getListingFallbackImageUrl(fresh));
+        }
+      }
+      await pushListing(listing._id);
     },
-    onSuccess: () => {
-      toast({ title: "Queued for eBay sync", tone: "success" });
+    onSuccess: (_data, { listing }) => {
+      toast({ title: `Queued for ${PLATFORM_LABEL[listing.platform] ?? listing.platform} sync`, tone: "success" });
       queryClient.invalidateQueries({ queryKey: ["listings"] });
+    },
+    onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
+  });
+
+  const googleUpdateMutation = useMutation({
+    mutationFn: ({ id, form }: { id: string; form: GoogleListingFormState }) => updateGoogleListing(id, form),
+    onSuccess: () => {
+      toast({ title: "Google Shopping details saved", tone: "success" });
+      queryClient.invalidateQueries({ queryKey: ["listings"] });
+      setGoogleEditTarget(null);
     },
     onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
   });
@@ -167,9 +227,55 @@ export default function ListingsPage() {
     onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
   });
 
+  // "List on <channel>" for a channel this product isn't on yet — Google is
+  // a one-click toggle (createGoogleListing also queues the first sync
+  // server-side); eBay needs its full create form, so that one navigates
+  // instead of mutating here (matches ProductPickerModal's own flow below).
+  const listOnGoogleMutation = useMutation({
+    mutationFn: (productId: string) => createGoogleListing(productId, null, GOOGLE_LISTING_FORM_INITIAL),
+    onSuccess: () => {
+      toast({ title: "Queued for Google Shopping sync", tone: "success" });
+      queryClient.invalidateQueries({ queryKey: ["listings"] });
+    },
+    onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
+  });
+
   function handleProductSelected(product: Product) {
     setPickerOpen(false);
     navigate(`/listings/new?product=${product._id}&productSlug=${product.slug}`);
+  }
+
+  function openEdit(group: ProductListingGroup, listing: GroupedListingSummary) {
+    // eBay's rich form lives at /listings/:id/edit; Google's "lightweight
+    // toggle" listing has no equivalent page — it edits via a small inline
+    // modal instead. The grouped view's own listing summary doesn't carry
+    // Google's gtin/mpn/condition/etc. (kept out of the aggregation so this
+    // page doesn't have to project every platform's every field for every
+    // row — see types/marketplace.ts#GroupedListingSummary), so those are
+    // fetched on demand, the same way the eBay resave-before-push above
+    // already fetches the full listing on demand too.
+    if (listing.platform === "google") {
+      // NOTE (lint fix): this floating promise had no .catch — a failed
+      // fetch (network error, 404 on a deleted listing) silently did
+      // nothing, with no feedback that "Edit" had failed. Matches this
+      // file's other mutations' onError convention.
+      getListing(listing._id)
+        .then(({ data: full }) => {
+          if (full.platform === "google") setGoogleEditTarget(full);
+        })
+        .catch((err: Error) => toast({ title: err.message, tone: "danger" }));
+      return;
+    }
+    navigate(`/listings/${listing._id}/edit`);
+  }
+
+  function listOnChannel(group: ProductListingGroup, targetPlatform: string) {
+    if (!group.product) return;
+    if (targetPlatform === "google") {
+      listOnGoogleMutation.mutate(group.product._id);
+    } else {
+      navigate(`/listings/new?product=${group.product._id}&productSlug=${group.product.slug}`);
+    }
   }
 
   return (
@@ -178,7 +284,7 @@ export default function ListingsPage() {
         title="Listings"
         description={
           total > 0
-            ? `${total} listing${total !== 1 ? "s" : ""} across your channels`
+            ? `${total} product${total !== 1 ? "s" : ""} listed across your channels`
             : "Manage your channel listings"
         }
       >
@@ -205,6 +311,7 @@ export default function ListingsPage() {
             {isFetching && !isLoading && (
               <span className="text-xs text-fg/40">Updating…</span>
             )}
+            <FilterSelect options={PLATFORM_FILTERS} value={platform} onChange={setPlatform} />
             <FilterSelect options={SYNC_STATUS_FILTERS} value={syncStatus} onChange={setSyncStatus} />
           </div>
         </div>
@@ -212,7 +319,7 @@ export default function ListingsPage() {
         {/* Table */}
         {isLoading ? (
           <LoadingSkeleton />
-        ) : listings.length === 0 ? (
+        ) : groups.length === 0 ? (
           <EmptyState onNew={() => setPickerOpen(true)} />
         ) : (
           <div className="overflow-x-auto">
@@ -226,61 +333,116 @@ export default function ListingsPage() {
                   >
                     Product
                   </StickyTableHead>
-                  <TableHead>Platform</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Channels</TableHead>
                   <TableHead>Last Synced</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {listings.map((listing) => {
-                  const productObj =
-                    listing.product !== null && typeof listing.product === "object"
-                      ? listing.product
-                      : null;
-                  const productTitle = productObj?.title ?? "—";
-                  const sku = listing.store_sku || productObj?.sku || "—";
-                  const syncedAt = listing.synced_at
-                    ? new Date(listing.synced_at).toLocaleDateString("en-AU")
-                    : "—";
+                {groups.map((group) => {
+                  const productId = group.product?._id ?? "";
+                  const isExpanded = expandedIds.has(productId);
+                  const listedPlatforms = new Set(group.listings.map((l) => l.platform));
+                  const latestSyncedAt = group.listings
+                    .map((l) => l.synced_at)
+                    .filter((d): d is string => !!d)
+                    .sort()
+                    .at(-1);
 
                   return (
-                    <TableRow
-                      key={listing._id}
-                      className="group cursor-pointer"
-                      onClick={() => navigate(`/listings/${listing._id}/edit`)}
-                    >
-                      <StickyTableCell
-                        size={52}
-                        width={productColWidth ?? undefined}
-                        onResize={setProductColWidth}
-                        className="truncate font-medium text-fg"
-                      >
-                        {productTitle}
-                      </StickyTableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="capitalize">
-                          {listing.platform}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-fg/60">{sku}</TableCell>
-                      <TableCell>
-                        <SyncBadge status={listing.sync_status} />
-                      </TableCell>
-                      <TableCell className="text-fg/60">{syncedAt}</TableCell>
-                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-end">
-                          <ListingRowActionsMenu
-                            onPush={() => pushMutation.mutate(listing._id)}
-                            pushDisabled={pushMutation.isPending}
-                            onEdit={() => navigate(`/listings/${listing._id}/edit`)}
-                            onDelete={() => setDeleteTarget(listing)}
-                            ebayItemUrl={listing.ebay_item_url}
-                          />
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                    <FragmentRow key={productId || group.listings[0]?._id}>
+                      <TableRow className="cursor-pointer" onClick={() => toggleExpanded(productId)}>
+                        <StickyTableCell
+                          size={52}
+                          width={productColWidth ?? undefined}
+                          onResize={setProductColWidth}
+                          className="truncate font-medium text-fg"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            {isExpanded ? (
+                              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-fg/40" />
+                            ) : (
+                              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-fg/40" />
+                            )}
+                            {group.product?.title ?? "—"}
+                          </span>
+                        </StickyTableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-1.5">
+                            {AVAILABLE_PLATFORMS.map((p) => {
+                              const listing = group.listings.find((l) => l.platform === p);
+                              return listing ? (
+                                <SyncBadge key={p} status={listing.sync_status} label={PLATFORM_LABEL[p] ?? p} />
+                              ) : (
+                                <Badge key={p} variant="muted" className="opacity-50">
+                                  {PLATFORM_LABEL[p] ?? p}: not listed
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-fg/60">
+                          {latestSyncedAt ? new Date(latestSyncedAt).toLocaleDateString("en-AU") : "—"}
+                        </TableCell>
+                        <TableCell className="text-right text-xs text-fg/40" onClick={(e) => e.stopPropagation()}>
+                          {group.listings.length} channel{group.listings.length !== 1 ? "s" : ""}
+                        </TableCell>
+                      </TableRow>
+
+                      {isExpanded && (
+                        <TableRow className="bg-bg-2/50 hover:bg-bg-2/50">
+                          <TableCell colSpan={4} className="p-0">
+                            <div className="divide-y divide-border/60 px-5 py-2">
+                              {group.listings.map((listing) => (
+                                <div key={listing._id} className="flex items-center gap-4 py-2.5">
+                                  <Badge variant="outline" className="w-fit shrink-0">
+                                    {PLATFORM_LABEL[listing.platform] ?? listing.platform}
+                                  </Badge>
+                                  <span className="w-32 shrink-0 truncate text-xs text-fg/60">
+                                    {(listing.platform === "ebay" ? listing.store_sku : null) || group.product?.sku || "—"}
+                                  </span>
+                                  <SyncBadge status={listing.sync_status} />
+                                  <span className="w-24 shrink-0 text-xs text-fg/60">
+                                    {listing.synced_at ? new Date(listing.synced_at).toLocaleDateString("en-AU") : "—"}
+                                  </span>
+                                  <div className="ml-auto">
+                                    <ListingRowActionsMenu
+                                      platform={listing.platform}
+                                      onPush={() => pushMutation.mutate({ group, listing })}
+                                      pushDisabled={pushMutation.isPending}
+                                      onEdit={() => openEdit(group, listing)}
+                                      onDelete={() => setDeleteTarget({ group, listing })}
+                                      externalUrl={listing.ebay_item_url}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+
+                              {AVAILABLE_PLATFORMS.filter((p) => !listedPlatforms.has(p as MarketplacePlatform)).map(
+                                (p) => (
+                                  <div key={p} className="flex items-center gap-4 py-2.5">
+                                    <Badge variant="muted" className="w-fit shrink-0 opacity-60">
+                                      {PLATFORM_LABEL[p] ?? p}
+                                    </Badge>
+                                    <span className="text-xs text-fg/40">Not listed</span>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="ml-auto gap-1.5"
+                                      disabled={listOnGoogleMutation.isPending}
+                                      onClick={() => listOnChannel(group, p)}
+                                    >
+                                      <Plus className="h-3.5 w-3.5" />
+                                      List on {PLATFORM_LABEL[p] ?? p}
+                                    </Button>
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </FragmentRow>
                   );
                 })}
               </TableBody>
@@ -318,10 +480,12 @@ export default function ListingsPage() {
               {deleteTarget && (
                 <>
                   <span className="font-medium text-fg">{deleteListingName}</span> will be
-                  permanently removed.
+                  permanently removed from {PLATFORM_LABEL[deleteTarget.listing.platform] ?? deleteTarget.listing.platform}.
                   {deleteListingIsLive && (
                     <span className="mt-1 block text-amber-500">
-                      This listing is live on eBay and will also be withdrawn.
+                      This listing is live on{" "}
+                      {PLATFORM_LABEL[deleteTarget.listing.platform] ?? deleteTarget.listing.platform} and will also
+                      be withdrawn.
                     </span>
                   )}
                 </>
@@ -341,7 +505,7 @@ export default function ListingsPage() {
               disabled={deleteMutation.isPending}
               onClick={() => {
                 if (!deleteTarget) return;
-                deleteMutation.mutate(deleteTarget._id, {
+                deleteMutation.mutate(deleteTarget.listing._id, {
                   onSuccess: () => setDeleteTarget(null),
                 });
               }}
@@ -352,8 +516,24 @@ export default function ListingsPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      <GoogleListingEditModal
+        listing={googleEditTarget}
+        open={!!googleEditTarget}
+        onClose={() => setGoogleEditTarget(null)}
+        onSave={(form) => {
+          if (googleEditTarget) googleUpdateMutation.mutate({ id: googleEditTarget._id, form });
+        }}
+        saving={googleUpdateMutation.isPending}
+      />
     </div>
   );
+}
+
+// React requires a single element/Fragment per array item — a plain <>
+// alias so the two-TableRow-per-product structure above reads cleanly.
+function FragmentRow({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
 }
 
 // ── Skeleton & empty state ────────────────────────────────────────────────────

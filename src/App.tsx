@@ -35,6 +35,7 @@ import PaymentAccountPage from "@/pages/erp/settings/PaymentAccountPage";
 import PaymentSettingsPage from "@/pages/erp/settings/PaymentSettingsPage";
 import EmailSettingsPage from "@/pages/erp/settings/EmailSettingsPage";
 import EbaySettingsPage from "@/pages/erp/settings/EbaySettingsPage";
+import GoogleSettingsPage from "@/pages/erp/settings/GoogleSettingsPage";
 import DomainsPage from "@/pages/erp/settings/DomainsPage";
 import PayOrderPage from "@/pages/PayOrderPage";
 
@@ -122,6 +123,7 @@ export default function App() {
               <Route path="payment-settings" element={<PaymentSettingsPage />} />
               <Route path="email" element={<EmailSettingsPage />} />
               <Route path="ebay" element={<EbaySettingsPage />} />
+              <Route path="google" element={<GoogleSettingsPage />} />
               <Route path="domains" element={<DomainsPage />} />
             </Route>
           </Route>

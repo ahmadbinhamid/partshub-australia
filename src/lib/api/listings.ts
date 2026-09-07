@@ -1,6 +1,12 @@
 import { apiClient } from "./client";
 import type { BeResponse, PaginatedData } from "./base";
-import type { EbayListing, EbayListingFormState } from "@/types/marketplace";
+import type {
+  AnyMarketplaceListing,
+  EbayListing,
+  EbayListingFormState,
+  MarketplacePlatform,
+  ProductListingGroup,
+} from "@/types/marketplace";
 import type { ProductVehicle } from "@/types/product";
 import { generateListingHtml } from "@/components/listings/platforms/ebay/ebayDescriptionGenerator";
 import { getTenantSettings } from "@/lib/api/tenantSettings";
@@ -10,6 +16,7 @@ export interface ListingListParams {
   limit?: number;
   product?: string;
   product_in?: string;
+  platform?: MarketplacePlatform;
   state?: string;
   sync_status?: string;
   search?: string;
@@ -76,6 +83,9 @@ async function formStateToPayload(
   };
 }
 
+// eBay's own rich-form CREATE/UPDATE — stays on /ebay/listings since the
+// fields (category, fitment, business policies, ...) are eBay-specific. See
+// lib/api/googleListings.ts for Google's much smaller create/update.
 export const createListing = async (
   form: EbayListingFormState,
   vehicle?: ProductVehicle | null,
@@ -83,19 +93,6 @@ export const createListing = async (
 ) => {
   const payload = await formStateToPayload(form, vehicle, fallbackImageUrl);
   const { data } = await apiClient.post<BeResponse<EbayListing>>("/ebay/listings", payload);
-  return data;
-};
-
-export const getListings = async (params: ListingListParams = {}) => {
-  const { data } = await apiClient.get<BeResponse<PaginatedData<EbayListing>>>(
-    "/ebay/listings",
-    { params },
-  );
-  return data;
-};
-
-export const getListing = async (id: string) => {
-  const { data } = await apiClient.get<BeResponse<EbayListing>>(`/ebay/listings/${id}`);
   return data;
 };
 
@@ -110,14 +107,35 @@ export const updateListing = async (
   return data;
 };
 
+// Browse/read/delete/push are platform-agnostic — /listings mixes every
+// platform's rows together (see server/src/services/marketplace/listing.query.service.js's
+// own module header for why only create/update stay per-platform).
+export const getListings = async (params: ListingListParams = {}) => {
+  const { data } = await apiClient.get<BeResponse<PaginatedData<AnyMarketplaceListing>>>("/listings", { params });
+  return data;
+};
+
+// TASK 6: same endpoint, `?group_by=product` — one row per product instead
+// of one per listing (listing.query.service.js#listListingsGroupedByProduct).
+// Same query params otherwise (pagination/filters/search all still apply).
+export const getGroupedListings = async (params: ListingListParams = {}) => {
+  const { data } = await apiClient.get<BeResponse<PaginatedData<ProductListingGroup>>>("/listings", {
+    params: { ...params, group_by: "product" },
+  });
+  return data;
+};
+
+export const getListing = async (id: string) => {
+  const { data } = await apiClient.get<BeResponse<AnyMarketplaceListing>>(`/listings/${id}`);
+  return data;
+};
+
 export const deleteListing = async (id: string) => {
-  const { data } = await apiClient.delete<BeResponse>(`/ebay/listings/${id}`);
+  const { data } = await apiClient.delete<BeResponse>(`/listings/${id}`);
   return data;
 };
 
 export const pushListing = async (id: string) => {
-  const { data } = await apiClient.post<BeResponse<{ queued: boolean }>>(
-    `/ebay/listings/${id}/push`,
-  );
+  const { data } = await apiClient.post<BeResponse<{ queued: boolean }>>(`/listings/${id}/push`);
   return data;
 };

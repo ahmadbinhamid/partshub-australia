@@ -182,6 +182,17 @@ async function getAppToken(settings) {
 
 // App token scoped for Taxonomy / Catalog APIs (client_credentials, base scope)
 // — not tenant-specific, cached once for the whole process.
+// Catalog/Taxonomy calls always use PRODUCTION app credentials + the
+// PRODUCTION token endpoint (see the fetch below and taxonomyBaseUrlFor's
+// own callers) — this is intentional even for an otherwise all-sandbox
+// setup, since eBay's sandbox taxonomy tree doesn't work. Practically, this
+// means a developer running a sandbox-only tenant still needs real
+// PRODUCTION EBAY_CLIENT_ID/EBAY_CLIENT_SECRET (App ID + Cert ID) in .env
+// for anything that touches categories/aspects — see server/.env.example
+// and server/docs/ebay-setup.md. Get eBay to reject those specifically
+// (invalid_client) and this used to surface as a bare, unhelpful 500 from
+// GET /api/v1/ebay/category-aspects — see ebay.controller.js#getCategoryAspects,
+// which now maps this to a 502 naming the actual cause.
 async function getCatalogToken() {
   const now = Date.now();
   if (_cachedCatalogToken && now < _catalogTokenExpiry - 30_000) return _cachedCatalogToken;
@@ -205,6 +216,34 @@ async function getCatalogToken() {
 
   if (!res.ok) {
     const text = await res.text();
+    // Never log `credentials` (the Basic auth header) or clientSecret
+    // itself — only the App ID (not sensitive the way Cert ID/secret is)
+    // and whatever eBay's own response body says.
+    let isInvalidClient = false;
+    try {
+      isInvalidClient = JSON.parse(text)?.error === "invalid_client";
+    } catch {
+      // Not JSON — fall through, treated as a generic failure below.
+    }
+
+    if (isInvalidClient) {
+      logger.error(
+        `[eBay] Catalog token fetch rejected (invalid_client) for App ID "${config.ebay.clientId}" — ` +
+          "taxonomy/catalog calls require PRODUCTION eBay app keys (App ID + Cert ID) even when the " +
+          "tenant itself is sandbox-connected. Check EBAY_CLIENT_ID/EBAY_CLIENT_SECRET are your app's " +
+          "PRODUCTION keyset, not the Sandbox one.",
+      );
+      const err = new Error(
+        "eBay rejected the configured app credentials (invalid_client). Catalog/taxonomy calls require " +
+          "PRODUCTION eBay app keys (App ID + Cert ID), even for an otherwise sandbox-connected tenant.",
+      );
+      // Surfaces as a clear 502 (not a bare 500) via systemfailure()'s
+      // generic err.status handling — see ebay.controller.js#getCategoryAspects.
+      err.status = 502;
+      err.code = "EBAY_APP_CREDENTIALS_REJECTED";
+      throw err;
+    }
+
     logger.error(`[eBay] Catalog token fetch failed: ${res.status} ${text}`);
     return null;
   }
@@ -308,9 +347,36 @@ function resolveImageUrls(photos, settings) {
 // Our UI stores "NEW" or "USED". "NEW" is valid as-is; "USED" is not an eBay
 // enum — map it to USED_GOOD as the safe default. Any other stored value is
 // assumed to already be a valid eBay condition enum (for future granularity).
-function normalizeCondition(condition) {
-  if (!condition) return "FOR_PARTS_OR_NOT_WORKING";
-  if (condition === "USED") return "USED_GOOD";
+// "USED" maps to USED_EXCELLENT (3000), not USED_GOOD (5000) — 4000/5000/
+// 6000 are eBay's MEDIA condition grades (books, DVDs, games); most eBay
+// Motors parts categories only accept 3000/6000/7000, so defaulting to a
+// media-only grade was silently wrong for this app's whole domain (auto
+// parts). See CONDITION_FALLBACK_ORDER in ebay.adapter.js for the matching
+// fix to the per-category fallback search order.
+//
+// A falsy condition used to silently default to FOR_PARTS_OR_NOT_WORKING —
+// listing a part as broken because a field was left blank is a bad failure
+// mode nobody would notice until a buyer complained. Throws instead
+// (naming the SKU when the caller has one), so it surfaces as a listing
+// that needs attention. Every call site (ebay.adapter.js's
+// resolveCategoryCondition, buildInventoryItemFromResolved below) is only
+// ever reached from sync.service.js#syncListing's try/catch, which already
+// classifies and records ANY thrown error as a per-item sync failure — this
+// is not a new crash risk, just a more honest one than silently guessing
+// "broken".
+function normalizeCondition(condition, sku = null) {
+  if (!condition) {
+    const err = new Error(`Item condition is required${sku ? ` for SKU ${sku}` : ""} — set a condition before publishing to eBay`);
+    // A missing condition is a per-item listing-data problem, never
+    // evidence the eBay connection itself is broken — see
+    // circuitBreaker.js#isTransportOrAuthFailure, which only counts
+    // >=500/401/403 (or no status at all) toward the breaker. Set here
+    // rather than at each call site so nothing that forgets to classify it
+    // accidentally trips the breaker on a blank condition field.
+    err.status = 400;
+    throw err;
+  }
+  if (condition === "USED") return "USED_EXCELLENT";
   return condition;
 }
 
@@ -346,7 +412,7 @@ function buildVehicleAspects(product) {
 function buildInventoryItemFromResolved(resolved, quantity = 0, conditionOverride = null, settings = null) {
   const { sku, title, description, brand, photos, listing, product } = resolved;
   const imageUrls = resolveImageUrls(photos, settings);
-  const condition = conditionOverride || normalizeCondition(listing.condition);
+  const condition = conditionOverride || normalizeCondition(listing.condition, sku);
 
   // Resolve brand/mpn once — used for both aspects and the product-level fields.
   // eBay validates Brand/MPN as a pair at the product level (error 25002 if one

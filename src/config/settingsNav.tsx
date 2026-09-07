@@ -1,4 +1,4 @@
-import { Building2, CreditCard, Globe, Link2, Mail, ShoppingBag } from "lucide-react";
+import { Building2, CreditCard, Globe, Link2, Mail, ShoppingBag, ShoppingCart } from "lucide-react";
 
 export type SettingsNavItem = {
   label: string;
@@ -20,6 +20,7 @@ export const SETTINGS_NAV_SECTIONS: SettingsNavSection[] = [
       { label: "Payment Settings", href: "/settings/payment-settings", icon: (p) => <Globe {...p} /> },
       { label: "Email Settings", href: "/settings/email", icon: (p) => <Mail {...p} /> },
       { label: "eBay Integration", href: "/settings/ebay", icon: (p) => <ShoppingBag {...p} /> },
+      { label: "Google Shopping", href: "/settings/google", icon: (p) => <ShoppingCart {...p} /> },
       { label: "Domains", href: "/settings/domains", icon: (p) => <Link2 {...p} /> },
     ],
   },

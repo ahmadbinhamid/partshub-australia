@@ -52,4 +52,31 @@ function decrypt({ ciphertext, iv, tag }) {
   return plaintext.toString("utf8");
 }
 
-module.exports = { encrypt, decrypt };
+// ── ciphertext packing ───────────────────────────────────────────────────────
+//
+// encrypt() above returns {ciphertext, iv, tag} — three base64 strings.
+// ChannelConnection's generic contract (see models/ChannelConnection.js) has
+// a single *_ct string per token slot, shared across every platform's cipher
+// output, so the three parts are packed into one delimited string here
+// rather than widening that schema per platform.
+// NOTE: base64 alphabets never contain ".", so joining/splitting on "." is
+// unambiguous and reversible.
+//
+// NOTE: services/ebay/ebay.settings.service.js already has its OWN private
+// copy of these exact two functions, predating this shared extraction. It
+// is intentionally left untouched and NOT switched over to import these —
+// this run's invariants forbid editing anything under services/ebay/. New
+// platforms (starting with Google) use this shared copy; eBay's copy stays
+// where it is.
+function packCiphertext({ ciphertext, iv, tag }) {
+  if (!ciphertext) return null;
+  return `${iv}.${tag}.${ciphertext}`;
+}
+
+function unpackCiphertext(packed) {
+  if (!packed) return { ciphertext: null, iv: null, tag: null };
+  const [iv, tag, ciphertext] = packed.split(".");
+  return { ciphertext, iv, tag };
+}
+
+module.exports = { encrypt, decrypt, packCiphertext, unpackCiphertext };

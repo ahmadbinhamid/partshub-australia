@@ -29,7 +29,9 @@ const CATEGORIES = [
   { name: "Exhaust", slug: "exhaust" },
 ];
 
-(async () => {
+// NOTE (lint fix): see server.js's identical comment — the try/catch/
+// process.exit(1) below already means this never actually rejects.
+void (async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI);
     await User.syncIndexes();

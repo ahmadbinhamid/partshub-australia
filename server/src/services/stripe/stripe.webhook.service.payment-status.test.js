@@ -33,6 +33,22 @@ const Payment = require("../../models/Payment");
 const Refund = require("../../models/Refund");
 const stripeKeysService = require("../stripe/stripe.keys.service");
 const { ORDER_PAYMENT_STATUS } = require("../../constants/order.constants");
+// This test drives the REAL handlePaymentSucceeded webhook handler, which
+// really does send an order-confirmation email (services/email/email.service.js
+// -> queues/email.queue.js) — a genuine, real Bull queue gets constructed
+// (lazily, on that first real send — see email.queue.js's own comment on
+// why it's lazy at all now), not a mock. `.close()` it in `finally` below,
+// same as refund.service.ledger-violation.test.js does for its own genuine
+// use of the real "ebay" queue — found live: without this, the process
+// never exits on its own (confirmed via process._getActiveHandles()
+// showing 3 lingering Sockets, matching Bull's own client/subscriber/bclient
+// connections for one Queue instance), which was hanging the full suite at
+// exactly this file. Deliberately NOT destructured up here — that would
+// force eager construction at module load for a queue this file might not
+// even end up using, exactly what email.queue.js's own laziness exists to
+// avoid; accessed once, in `finally`, only after it's already certain the
+// queue was actually used.
+const emailQueueModule = require("../../queues/email.queue");
 
 test("handlePaymentSucceeded sets payment_status, not just the legacy status field", async (t) => {
   await mongoose.connect(config.mongoUri);
@@ -180,6 +196,10 @@ test("handlePaymentSucceeded sets payment_status, not just the legacy status fie
     await Refund.deleteMany({ order: order._id });
     await Payment.deleteMany({ order: order._id });
     await Order.deleteOne({ _id: order._id });
+    // handlePaymentSucceeded (above) always sends an order-confirmation
+    // email for this fixture, so the real queue is already constructed by
+    // this point either way — .close() it before disconnecting.
+    await emailQueueModule.emailQueue.close();
     await mongoose.disconnect();
   }
 });

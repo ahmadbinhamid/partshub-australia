@@ -34,10 +34,14 @@ import {
   updateProduct,
 } from "@/lib/api/products";
 import { getCategories } from "@/lib/api/categories";
+import { getChannels } from "@/lib/api/channels";
+import { createGoogleListing } from "@/lib/api/googleListings";
+import { GOOGLE_LISTING_FORM_INITIAL } from "@/types/marketplace";
 import type { Product } from "@/types/product";
 import { formatCurrency } from "@/utils/format";
 import {
   ShoppingBag,
+  ShoppingCart,
   ChevronDown,
   CheckCircle2,
   Mail,
@@ -215,6 +219,28 @@ function ProductEditForm({
   const [imagesUploading, setImagesUploading] = useState(false);
   const [sendEmailOpen, setSendEmailOpen] = useState(false);
 
+  // Same queryKey GoogleConnectCard uses — shares its cache, so this doesn't
+  // fire a second request if the tenant already loaded Settings this
+  // session, and vice versa.
+  const { data: channelsData } = useQuery({ queryKey: ["channels"], queryFn: getChannels });
+  const googleConnected = channelsData?.data.find((c) => c.key === "google")?.connection.status === "connected";
+
+  // "Lightweight toggle" — see google.listing.service.js's own module
+  // header: unlike eBay's multi-step form-then-push flow (the "List on
+  // eBay" button below just navigates to that form), this one action both
+  // creates the listing and queues its first sync. Safe to click again —
+  // the backend's own idempotency check returns the existing listing rather
+  // than erroring or duplicating it.
+  const listOnGoogleMutation = useMutation({
+    mutationFn: () => createGoogleListing(product._id, null, GOOGLE_LISTING_FORM_INITIAL),
+    onSuccess: () => {
+      toast({ title: "Queued for Google Shopping sync", tone: "success" });
+      queryClient.invalidateQueries({ queryKey: ["listings"] });
+      queryClient.invalidateQueries({ queryKey: ["listings-for-products"] });
+    },
+    onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
+  });
+
   const {
     register,
     control,
@@ -374,6 +400,19 @@ function ProductEditForm({
               <ShoppingBag className="h-3.5 w-3.5" />
               List on eBay
             </Button>
+            {googleConnected && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="gap-1.5"
+                disabled={listOnGoogleMutation.isPending}
+                onClick={() => listOnGoogleMutation.mutate()}
+              >
+                <ShoppingCart className="h-3.5 w-3.5" />
+                {listOnGoogleMutation.isPending ? "Listing…" : "List on Google Shopping"}
+              </Button>
+            )}
             <Button
               type="button"
               variant="primary"

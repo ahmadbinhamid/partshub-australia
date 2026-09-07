@@ -1,4 +1,4 @@
-export type MarketplacePlatform = "ebay" | "amazon" | "shopify";
+export type MarketplacePlatform = "ebay" | "google" | "amazon" | "shopify";
 export type ListingState = "draft" | "active" | "ended";
 export type ListingSyncStatus = "not_listed" | "pending" | "synced" | "out_of_stock" | "price_locked" | "error";
 
@@ -101,6 +101,74 @@ export interface EbayListing extends MarketplaceListing {
   item_location_zip: string | null;
   package: PackageDimensions;
 }
+
+export type GoogleCondition = "new" | "refurbished" | "used";
+
+// Deliberately small — see google.listing.service.js's own module header.
+// feed_label/content_language are feed-level settings from the tenant's
+// Google connection (chosen once at connect time), never per-listing, so
+// they don't appear here even though the backend schema technically has
+// unused fields for them.
+export interface GoogleListing extends MarketplaceListing {
+  platform: "google";
+  google_product_category: string | null;
+  gtin: string | null;
+  mpn: string | null;
+  condition: GoogleCondition | null;
+  shipping_label: string | null;
+}
+
+// The Listings page's main table mixes every platform's rows together (see
+// listing.query.service.js) — this is what a row actually is once you don't
+// know which platform ahead of time. Narrow with `listing.platform` before
+// reading a platform-specific field.
+export type AnyMarketplaceListing = EbayListing | GoogleListing;
+
+// TASK 6 (regroup the listings page by product) — the ?group_by=product
+// shape of GET /listings (listing.query.service.js#listListingsGroupedByProduct):
+// one row per product, with all of that product's listings nested. Kept
+// deliberately smaller than AnyMarketplaceListing — just enough for the
+// grouped table's collapsed + expanded rows (platform/status/date/actions)
+// — a platform-specific field only the edit modal needs (Google's gtin/mpn/
+// condition/etc.) is fetched on demand via the existing getListing(id) call
+// when the tenant actually opens Edit, rather than growing this shape to
+// carry every platform's every field for every row on the list page.
+export interface GroupedListingSummary {
+  _id: string;
+  platform: MarketplacePlatform;
+  state: ListingState;
+  sync_status: ListingSyncStatus;
+  synced_at: string | null;
+  sync_error: string | null;
+  external_listing_id: string | null;
+  condition: string | null;
+  store_sku: string | null;
+  updated_at: string;
+  ebay_item_url?: string | null;
+}
+
+export interface ProductListingGroup {
+  product: MarketplaceListingProduct | null;
+  listings: GroupedListingSummary[];
+}
+
+// Editable fields for the Google "lightweight toggle" flow — see
+// components/listings/GoogleListingEditModal.tsx.
+export interface GoogleListingFormState {
+  google_product_category: string;
+  gtin: string;
+  mpn: string;
+  condition: GoogleCondition | "";
+  shipping_label: string;
+}
+
+export const GOOGLE_LISTING_FORM_INITIAL: GoogleListingFormState = {
+  google_product_category: "",
+  gtin: "",
+  mpn: "",
+  condition: "",
+  shipping_label: "",
+};
 
 // Form state — all numeric fields kept as strings to avoid controlled-input issues
 export interface EbayListingFormState {

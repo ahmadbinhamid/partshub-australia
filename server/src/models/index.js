@@ -14,5 +14,7 @@ module.exports = {
   InventorySettings: require("./InventorySettings"),
   EbayProcessedOrder: require("./EbayProcessedOrder"),
   MarketplaceListing: require("./MarketplaceListing"),
+  ChannelConnection: require("./ChannelConnection"),
+  ChannelSyncLog: require("./ChannelSyncLog"),
   VehicleModel: require("./VehicleModel"),
 };

@@ -131,6 +131,23 @@ async function getActiveHostnames() {
   return hostnameCache.hostnames;
 }
 
+// TASK 5 (requiresStorefront capability): does this tenant have a real,
+// DNS-verified storefront domain of their OWN — the specific thing a
+// channel like Google Shopping needs (Merchant Center requires a claimed
+// AND verified website; see google.adapter.js's manifest.requiresStorefront
+// and channel.service.js#listChannelsForTenant). Deliberately the SAME
+// query listing.resolver.js#resolveProductUrl's "primary" host-resolution
+// branch uses (is_default: true, status: ACTIVE) — but, unlike
+// resolveProductUrl, does NOT also accept the PAYMENT_LINK_DOMAIN
+// tenant-subdomain fallback as sufficient here: that fallback is a
+// subdomain of THIS platform's own domain, which the tenant doesn't
+// control and couldn't verify ownership of with Google even if asked —
+// fine as a payment-link host, not a real storefront a channel can require.
+async function hasVerifiedDefaultDomain(tenantId) {
+  const domain = await Domain.exists({ tenant_id: tenantId, is_default: true, status: DOMAIN_STATUS.ACTIVE });
+  return !!domain;
+}
+
 module.exports = {
   listDomains,
   createDomain,
@@ -139,4 +156,5 @@ module.exports = {
   verifyDomainDns,
   getActiveHostnames,
   getVerificationRecordName,
+  hasVerifiedDefaultDomain,
 };

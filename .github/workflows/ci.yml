@@ -1,0 +1,147 @@
+name: CI
+
+# TASK 2: no existing .github/ conventions in this repo to match (none
+# existed before this workflow) — this is the first one, so it sets the
+# convention rather than following one.
+on:
+  push:
+  pull_request:
+
+# A second push to the same branch/PR cancels the still-running CI for the
+# previous one — no point finishing a check on code that's already stale.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Frontend: install, lint, typecheck. No DB/queue involved — kept as its
+  # own job (rather than folded into `backend`) so it runs in parallel with
+  # the ~34s backend suite instead of adding to it serially.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # NOTE: 22, not 20 — the production server runs v22.23.1, which is
+          # the source of truth (see server/Dockerfile's own comment). This
+          # used to say 20, disagreeing with both the dev machine (v26) and
+          # prod; standardised on 22 everywhere in this round.
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # NOTE: continue-on-error removed — eslint's own exit code already
+      # does the right thing here with no flag needed: it exits 0 when every
+      # violation is warning-severity (currently 0 errors / 102 warnings on
+      # this side) and exits 1 the moment a real error-severity violation
+      # exists. continue-on-error was doing nothing today and would have
+      # silently swallowed that future exit-1, which is the opposite of what
+      # "warnings stay non-fatal, errors break the build" means.
+      - run: npm run lint
+
+      # tsc -b (build's own project-reference step) — matches `npm run
+      # build`'s own first command, without the `vite build` half (CI has no
+      # reason to actually produce a bundle just to prove the types compile).
+      - run: npx tsc -b
+
+  # Backend: install, lint, run the full `node --test` suite against real
+  # Mongo + Redis service containers (the suite needs both — see this
+  # session's own work making it pass deterministically with no manual DB
+  # clearing).
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    # mongo:7 / redis:7-alpine — pinned to match docker-compose.yml exactly
+    # (the versions this app actually runs against in production), not
+    # guessed or left at `latest`.
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ping:1})' --quiet"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      MONGO_URI: mongodb://127.0.0.1:27017/pha-ci
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+      # NOTE (maintenance): the single obvious place to update this when
+      # tests are added/removed — the "collected N tests" assertion step
+      # below reads it, rather than a number buried in a grep pattern.
+      # Considered deriving it from the test-file count instead, but file
+      # count != test count (one file commonly holds several `test()`/
+      # `t.test()` calls — this suite is 41 files but 186 tests), so there's
+      # no reliable derivation; a single named constant is the honest option.
+      EXPECTED_TEST_COUNT: "186"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # NOTE: see frontend job's identical comment — 22 is the
+          # production version, not 20.
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+
+      # NOTE (Task 1d): generated fresh per run instead of a committed
+      # literal — nothing in this job needs a STABLE key across steps or
+      # jobs (this job is the only consumer, in a single shell environment
+      # for its whole duration via $GITHUB_ENV; the frontend job never
+      # touches encrypted fields at all), so a fresh throwaway key per run
+      # is strictly better than a fixed one with no downside here.
+      - run: echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      # NOTE: continue-on-error removed — see frontend job's identical NOTE.
+      # Backend currently: 0 errors, 213 warnings.
+      - run: npm run lint
+
+      # Must fail the build — this is the one step Task 2 explicitly does
+      # NOT get a continue-on-error/retry allowance. The suite is ~34s
+      # locally and deterministic (186 tests, verified twice back-to-back
+      # with no manual DB clearing); no retries added here on purpose — a
+      # flaky run in CI is a real finding, not something to paper over.
+      #
+      # NOTE (Task 1b): `tee` (not `>`) so the assertion step below can
+      # read it back without re-running the suite, while this step's own
+      # stdout/exit code are unaffected — `run:` steps on ubuntu-latest use
+      # `bash -eo pipefail` by default, so a non-zero `npm test` still fails
+      # THIS step even though it's the left side of a pipe.
+      - run: npm test 2>&1 | tee test-output.txt
+
+      # NOTE (Task 1b): a version-resolved-glob-to-nothing (or any other
+      # silent "ran fewer tests than it should have") would otherwise still
+      # exit 0 and go green. Matches on the exact TAP summary line node:test
+      # prints — verified this is really what Node 22 emits here (piped,
+      # non-TTY output defaults to the TAP reporter's "# tests N", not the
+      # "spec" reporter's "ℹ tests N" this session's dev machine happened to
+      # show on a newer Node) rather than assumed from the task description.
+      - run: |
+          grep -q "^# tests ${EXPECTED_TEST_COUNT}\$" test-output.txt || {
+            echo "Expected \"# tests ${EXPECTED_TEST_COUNT}\" in test output — got:"
+            grep "^# tests " test-output.txt || echo "(no '# tests' line found at all)"
+            exit 1
+          }

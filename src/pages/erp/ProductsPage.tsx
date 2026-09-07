@@ -25,7 +25,7 @@ import { getCategories } from "@/lib/api/categories";
 import { getListings } from "@/lib/api/listings";
 import { useToast } from "@/context";
 import type { Product } from "@/types/product";
-import type { EbayListing } from "@/types/marketplace";
+import type { AnyMarketplaceListing } from "@/types/marketplace";
 import { Pagination } from "@/components/ui/Pagination";
 import { DEFAULT_PAGE_SIZE, DEFAULT_PAGE_SIZE_GRID, PER_PAGE_OPTIONS_GRID } from "@/config/pagination";
 import { PLATFORM_LABEL, AVAILABLE_PLATFORMS } from "@/config/marketplacePlatforms";
@@ -200,8 +200,11 @@ export default function ProductsPage() {
   const pageProductIds = (data?.data?.items ?? []).map((p) => p._id);
 
   // Scoped to just this page's product ids (not a flat `limit`-capped fetch)
-  // so a tenant with >100 total eBay listings doesn't have older listings
-  // silently excluded — see ebay.listing.service.js#listListings.
+  // so a tenant with >100 total listings on any one channel doesn't have
+  // older listings silently excluded — see
+  // listing.query.service.js#listListings. Mixes every platform's listings
+  // together (that endpoint is generic, not eBay-only), so a product's
+  // Channels badge shows Google alongside eBay without a second fetch.
   const { data: listingsData } = useQuery({
     queryKey: ["listings-for-products", pageProductIds],
     queryFn: () => getListings({ product_in: pageProductIds.join(",") }),
@@ -210,7 +213,7 @@ export default function ProductsPage() {
   });
 
   const listingPlatformsMap = new Map<string, string[]>();
-  ((listingsData?.data?.items ?? []) as EbayListing[])
+  ((listingsData?.data?.items ?? []) as AnyMarketplaceListing[])
     .filter((l) => l.product != null)
     .forEach((l) => {
       const id = typeof l.product === "string" ? l.product : (l.product as { _id: string })._id;

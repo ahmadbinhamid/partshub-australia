@@ -9,7 +9,22 @@ const { getAccessToken, getCatalogToken, ebayHeaders, apiBaseUrlFor } = require(
 const { logger } = require("../../loaders/logging");
 
 const TAXONOMY_BASE = `${apiBaseUrlFor(false)}/commerce/taxonomy/v1`;
-const METADATA_BASE = `${apiBaseUrlFor(false)}/sell/metadata/v1`;
+
+// Unlike TAXONOMY_BASE above (paired with getCatalogToken()'s app-level
+// client_credentials token, which is ALSO always production — see that
+// function's own comment), condition policies are fetched with the
+// TENANT's own seller access token, which IS environment-specific — a
+// sandbox-connected tenant has a sandbox token. Hardcoding this to
+// production the same way TAXONOMY_BASE is would send a sandbox token to
+// eBay's production Metadata API, which eBay rejects outright — the
+// lookup fails, resolveCategoryCondition (ebay.adapter.js) silently falls
+// back to the raw, unvalidated condition, and eBay only ever catches the
+// resulting invalid condition much later at publishOffer (errorId 25021).
+// Computed per-call (not a module constant) so it can follow each tenant's
+// own sandbox flag.
+function metadataBaseFor(sandbox) {
+  return `${apiBaseUrlFor(sandbox)}/sell/metadata/v1`;
+}
 
 // ── In-memory caches ──────────────────────────────────────────────────────────
 
@@ -115,9 +130,27 @@ const CONDITION_ID_TO_ENUM = {
 // additionally require the sell.inventory scope to be reflected.
 
 async function getConditionPolicies(categoryId, settings) {
-  const cacheKey = `${settings?.tenant_id}:${categoryId}`;
-  const cached = _conditionCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiry) return cached.data;
+  // Cache key must be unique per (tenant, environment, marketplace) — a
+  // sandbox tenant's condition policies must never be served to a
+  // production tenant, or vice versa (they can genuinely differ — see
+  // metadataBaseFor's own comment above). tenant_id is present on every
+  // REAL connected tenant's settings object (see
+  // ebay.settings.service.js#toLegacyShape, which always sets it from the
+  // ChannelConnection/EbaySettings doc it read), but a tenant with no
+  // connection at all — never went through OAuth, no legacy EbaySettings
+  // row either — resolves to `{}`, so tenant_id is undefined. Rather than
+  // let every such caller collapse onto one shared, unscoped cache key
+  // (`undefined:...`), skip caching entirely for that case; there's nothing
+  // useful to cache against anyway (getAccessToken below will fail for it).
+  const canCache = settings?.tenant_id != null;
+  const cacheKey = canCache
+    ? `${settings.tenant_id}:${!!settings.sandbox}:${settings.marketplace_id}:${categoryId}`
+    : null;
+
+  if (canCache) {
+    const cached = _conditionCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiry) return cached.data;
+  }
 
   const token = await getAccessToken(settings);
   if (!token) throw new Error("Could not obtain eBay access token");
@@ -125,7 +158,7 @@ async function getConditionPolicies(categoryId, settings) {
   const marketplaceId = settings.marketplace_id;
   // filter=categoryIds:{id} selects exactly this one category
   const filter = `categoryIds:{${categoryId}}`;
-  const url = `${METADATA_BASE}/marketplace/${marketplaceId}/get_item_condition_policies?filter=${encodeURIComponent(filter)}`;
+  const url = `${metadataBaseFor(settings.sandbox)}/marketplace/${marketplaceId}/get_item_condition_policies?filter=${encodeURIComponent(filter)}`;
 
   const res = await fetch(url, { headers: ebayHeaders(token, marketplaceId) });
 
@@ -150,7 +183,9 @@ async function getConditionPolicies(categoryId, settings) {
       }
     : { conditionRequired: false, conditions: [] };
 
-  _conditionCache.set(cacheKey, { data: result, expiry: Date.now() + CONDITION_TTL_MS });
+  if (canCache) {
+    _conditionCache.set(cacheKey, { data: result, expiry: Date.now() + CONDITION_TTL_MS });
+  }
   return result;
 }
 

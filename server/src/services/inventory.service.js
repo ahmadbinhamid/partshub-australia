@@ -5,7 +5,7 @@ const Inventory = require("../models/Inventory");
 const InventoryHistory = require("../models/InventoryHistory");
 const Product = require("../models/Product");
 const ProductVariant = require("../models/ProductVariant");
-const { enqueueEbayJob } = require("../queues/ebay.queue");
+const { enqueueChannelJob } = require("../queues/channel.queue");
 const { logger } = require("../loaders/logging");
 const { ADJUSTMENT_TYPE } = require("../constants/inventory.constants");
 const { buildWordSearchOr } = require("../utils/regex");
@@ -143,6 +143,7 @@ async function fanOutMarketplaceInventory(productId, variantId, tenantId) {
     // Lazy-require to avoid circular dep at module load time
     const MarketplaceListing = require("../models/MarketplaceListing");
     const { LISTING_STATE } = require("../constants/marketplace.constants");
+    const registry = require("./marketplace/registry");
 
     const listings = await MarketplaceListing.find({
       product: productId,
@@ -152,19 +153,28 @@ async function fanOutMarketplaceInventory(productId, variantId, tenantId) {
     }).select("_id platform").lean();
 
     for (const listing of listings) {
+      // A listing can outlive its adapter being registered (e.g. a platform
+      // temporarily disabled in this worker process) — skip it rather than
+      // let one unknown platform throw and abort every other listing's
+      // fan-out below.
+      if (!registry.has(listing.platform)) {
+        logger.warn(`[inventory.service] fan-out skipped: no adapter registered for platform "${listing.platform}" (listing ${listing._id})`);
+        results.push({ listingId: listing._id.toString(), platform: listing.platform, queued: false, error: "no_adapter" });
+        continue;
+      }
+
       try {
-        // push_seq is an eBay-discriminator-only field — strict: false
-        // needed for the same reason as ebay.adapter.js#updateSyncBaseline.
+        // push_seq now lives on the base schema (see MarketplaceListing.js)
+        // so every platform gets a real fencing token — no strict: false
+        // needed here any more.
         const updated = await MarketplaceListing.findOneAndUpdate(
           { _id: listing._id, tenant_id: tenantId },
           { $inc: { push_seq: 1 } },
-          { new: true, strict: false },
+          { new: true },
         ).select("push_seq");
-        const seq = updated ? updated.push_seq : null;
+        const seq = updated ? (updated.push_seq ?? null) : null;
 
-        // All live platforms currently use the eBay queue; add platform routing here
-        // when additional queues (Amazon, Shopify) are introduced.
-        await enqueueEbayJob("sync_listing", { listingId: listing._id.toString(), seq });
+        await enqueueChannelJob(listing.platform, "sync_listing", { listingId: listing._id.toString(), seq });
         logger.info(`[inventory.service] fan-out queued sync_listing for ${listing._id} (${listing.platform}, seq ${seq})`);
         results.push({ listingId: listing._id.toString(), platform: listing.platform, queued: true, seq });
       } catch (qErr) {
@@ -554,9 +564,19 @@ async function adjustStockBySku(sku, delta, tenantId) {
         variant: result.variantId || null,
         platform: MARKETPLACE_PLATFORM.EBAY,
       },
-      { $set: { ebay_synced_quantity: result.totalStockAfter, ebay_synced_at: new Date() } },
-      // ebay_synced_quantity/ebay_synced_at are declared on the eBay
-      // DISCRIMINATOR schema, not MarketplaceListing's own base schema —
+      {
+        $set: {
+          // TODO(dual-write): remove ebay_synced_quantity/ebay_synced_at
+          // after backfill — see MarketplaceListing.js. synced_quantity/
+          // synced_at (base schema) are the generic replacement.
+          ebay_synced_quantity: result.totalStockAfter,
+          ebay_synced_at: new Date(),
+          synced_quantity: result.totalStockAfter,
+          synced_at: new Date(),
+        },
+      },
+      // ebay_synced_quantity/ebay_synced_at are still declared on the eBay
+      // DISCRIMINATOR schema only, not MarketplaceListing's own base schema —
       // Model.updateOne() called on the base model casts $set against only
       // the base schema's paths, and in strict mode (the default) silently
       // DROPS any field it doesn't recognize, with no error and a

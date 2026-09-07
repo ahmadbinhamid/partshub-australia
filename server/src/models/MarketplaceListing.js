@@ -54,6 +54,33 @@ const baseSchema = new Schema(
     synced_at: { type: Date, default: null },
     sync_error: { type: String, default: null },
 
+    // Fencing tokens for outbound quantity pushes — see the eBay adapter's
+    // original comment (still accurate) on why this exists: standard
+    // fencing-token pattern for idempotent, order-sensitive async writers
+    // (Kleppmann, "Designing Data-Intensive Applications" ch. 9). Used to be
+    // declared only on the eBay discriminator even though
+    // marketplace/sync.service.js#syncListing reads them generically for
+    // EVERY platform — a non-eBay listing would read `undefined` here and
+    // the stale-job fence would silently never trip. Moved to the base
+    // schema so every platform gets a real fencing token.
+    //
+    // Legacy eBay documents written before this migration have no
+    // push_seq/last_pushed_seq at all at the base level. Mongoose applies
+    // this default on hydrated (non-lean) reads even for docs missing the
+    // field, but NOT on `.lean()` reads — every comparison site coalesces
+    // with `?? 0` regardless, rather than depending on that distinction.
+    push_seq: { type: Number, default: 0 },
+    last_pushed_seq: { type: Number, default: 0 },
+
+    // Generic loop-prevention baseline — "what we currently believe this
+    // platform shows", set only after a confirmed push/reconcile, analogous
+    // to (and replacing, long-term) the eBay-only ebay_synced_quantity below.
+    // null until the first push/reconcile establishes a baseline.
+    // TODO(dual-write): once every write site is updated and
+    // ebay_synced_quantity is backfilled from this field for old rows, drop
+    // ebay_synced_quantity from the eBay discriminator entirely.
+    synced_quantity: { type: Number, default: null },
+
     // Generic external identifiers (eBay listingId/offerId, Amazon ASIN, etc.)
     external_listing_id: { type: String, default: null },
     external_offer_id: { type: String, default: null },
@@ -110,6 +137,13 @@ baseSchema.index(
   },
 );
 
+// Channel-agnostic query patterns (health dashboards, per-platform listing
+// counts, "most recently synced" views — see channel.controller.js /
+// channel.queue.js circuit breaker) — background: true so index build never
+// blocks writes on this collection in production.
+baseSchema.index({ tenant_id: 1, platform: 1, sync_status: 1 }, { background: true });
+baseSchema.index({ tenant_id: 1, platform: 1, synced_at: -1 }, { background: true });
+
 const MarketplaceListing = model("MarketplaceListing", baseSchema);
 
 // ── eBay discriminator ───────────────────────────────────────────────────────
@@ -162,6 +196,16 @@ const ebaySchema = new Schema({
   // eBay's live quantity against this value (not against local stock
   // directly) is what lets the inventory-sync poller tell "eBay changed
   // since we last touched it" apart from "we're the ones who changed it".
+  //
+  // DEPRECATED: superseded by the generic `synced_quantity` on the base
+  // schema. Kept here during the transition — every write site dual-writes
+  // both fields (see e.g. ebay.adapter.js#updateSyncBaseline), and every
+  // read site should prefer `synced_quantity ?? ebay_synced_quantity ??
+  // null` — so a rollback to pre-migration code (which only knows this
+  // field) keeps working, and so ebay.inventory-sync.service.js's existing
+  // poller (untouched by this migration, still reads this field directly)
+  // keeps seeing an accurate baseline.
+  // TODO(dual-write): remove after ebay_synced_quantity backfill.
   ebay_synced_quantity: { type: Number, default: null },
   // When ebay_synced_quantity was last confirmed by an actual eBay API
   // response (a successful push, or a reconciliation poll's read) — not a
@@ -185,19 +229,8 @@ const ebaySchema = new Schema({
   // to catch up) before applying it filters that false positive out while
   // still catching genuine manual edits, just one cycle later.
   ebay_pending_reconcile_qty: { type: Number, default: null },
-  // Fencing token for outbound quantity pushes — incremented atomically
-  // every time a sync_listing job is enqueued (see
-  // inventory.service.js#fanOutMarketplaceInventory, the one place that
-  // claims it). If two sync_listing jobs for the same listing are ever
-  // enqueued close together (a retry racing a newer push), the worker
-  // (marketplace/sync.service.js#syncListing) compares the job's seq
-  // against last_pushed_seq and drops anything older than what's already
-  // landed — without this, an out-of-order retry could overwrite a newer,
-  // correct quantity with a stale one. Standard fencing-token pattern for
-  // idempotent, order-sensitive async writers (Kleppmann, "Designing
-  // Data-Intensive Applications" ch. 9).
-  push_seq: { type: Number, default: 0 },
-  last_pushed_seq: { type: Number, default: 0 },
+  // push_seq / last_pushed_seq moved to the base schema — see its comment
+  // there — since sync.service.js reads them generically for every platform.
   listing_duration: { type: String, default: "GTC" },
   accept_best_offer: { type: Boolean, default: false },
   min_best_offer: { type: Number, default: null },
@@ -218,5 +251,39 @@ const ebaySchema = new Schema({
 });
 
 MarketplaceListing.discriminator(MARKETPLACE_PLATFORM.EBAY, ebaySchema);
+
+// ── Google (Merchant API) discriminator ──────────────────────────────────────
+//
+// Google is feed-shaped, not listing-shaped — there's no offer/publish
+// lifecycle the way eBay has one. external_listing_id holds the Merchant
+// API product resource name (channel~contentLanguage~feedLabel~offerId — see
+// google.adapter.js); external_offer_id is left null for every Google
+// listing, same as it would be for a listing that's never had an offer
+// created — the base schema's partial unique index on external_offer_id
+// already excludes null (`partialFilterExpression: { external_offer_id: {
+// $type: "string" }, ... }` above), so every Google listing sharing null
+// there doesn't collide.
+const googleSchema = new Schema({
+  // Google's own taxonomy id (https://support.google.com/merchants/answer/6324436)
+  // — a completely different concept from eBay's category id, not reused.
+  google_product_category: { type: String, default: null },
+  gtin: { type: String, default: null },
+  mpn: { type: String, default: null },
+  // Google's own condition enum ("new" | "refurbished" | "used") — lowercase,
+  // unlike eBay's ConditionEnum strings; kept as its own field rather than
+  // sharing a name with the eBay discriminator's `condition` to avoid
+  // implying they're interchangeable.
+  condition: { type: String, default: null },
+  feed_label: { type: String, default: null },
+  content_language: { type: String, default: null },
+  shipping_label: { type: String, default: null },
+  custom_label_0: { type: String, default: null },
+  custom_label_1: { type: String, default: null },
+  custom_label_2: { type: String, default: null },
+  custom_label_3: { type: String, default: null },
+  custom_label_4: { type: String, default: null },
+});
+
+MarketplaceListing.discriminator(MARKETPLACE_PLATFORM.GOOGLE, googleSchema);
 
 module.exports = MarketplaceListing;

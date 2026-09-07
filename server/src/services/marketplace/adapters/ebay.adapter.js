@@ -10,6 +10,9 @@
 //
 // Interface:
 //   key                                            -> "ebay"
+//   manifest                                        -> catalogue entry (see registry.js#list)
+//   capabilities                                    -> { publish, inventory, batch, orders, webhooks, inboundInventory, variants }
+//   loadSettings(tenantId)                          -> resolved eBay settings, or null if never connected
 //   publish(resolved, settings, hooks?, seq?)      -> { external_listing_id, external_offer_id, quantity }
 //   update(resolved, settings, hooks?, seq?)       -> { external_listing_id, external_offer_id, quantity }
 //   end(listing)                                   -> void
@@ -52,6 +55,51 @@ const MarketplaceListing = require("../../../models/MarketplaceListing");
 
 const key = "ebay";
 
+// GET /api/v1/channels merges this with the tenant's ChannelConnection
+// status/health (see channel.controller.js) — logo is left null, not a path
+// into assets/branding (no eBay asset exists there), since the frontend
+// isn't touched in this run and can decide how to render an icon for it.
+const manifest = {
+  key,
+  name: "eBay",
+  logo: null,
+  description: "Publish listings and sync inventory with eBay.",
+  status: "active",
+  authType: "oauth",
+  setupSteps: [
+    "Connect your eBay seller account via OAuth",
+    "Set your eBay marketplace and warehouse address",
+    "Choose default fulfillment/payment/return business policies",
+  ],
+  requiredTenantData: ["marketplace_id", "warehouse_address", "business_policies"],
+};
+
+const capabilities = {
+  publish: true,
+  inventory: true,
+  batch: false,
+  orders: true,
+  webhooks: true,
+  inboundInventory: true,
+  variants: true,
+};
+
+// Resolves this tenant's eBay settings for the generic sync dispatcher (see
+// sync.service.js). Deliberately mirrors getEbaySettings' own contract
+// exactly (an object — possibly with every field null/default for a never-
+// connected tenant — never `null` itself), NOT the newer generic
+// loadSettings contract's "null means not connected" convention.
+// NOTE: an eBay tenant with active listings but no credentials configured
+// still reaches publish()/update() below exactly as it always has, and gets
+// the same "credentials not configured" thrown error (retried by Bull same
+// as today) — the generic "not connected" skip in sync.service.js is for
+// adapters whose loadSettings legitimately returns null (a platform with no
+// resolvable settings at all), which never happens for eBay. Changing that
+// would be an observable behavior change for eBay this migration must avoid.
+async function loadSettings(tenantId) {
+  return getEbaySettings(tenantId);
+}
+
 // Keeps MarketplaceListing.ebay_synced_quantity current whenever WE push a
 // quantity to eBay, so the inventory-sync poller (ebay.inventory-sync.service.js)
 // can tell "eBay changed since we last touched it" apart from "we're the ones
@@ -73,17 +121,26 @@ async function updateSyncBaseline(productId, variantId, quantity, tenantId, seq 
     { tenant_id: tenantId, product: productId, variant: variantId || null, platform: key },
     {
       $set: {
+        // TODO(dual-write): remove ebay_synced_quantity/ebay_synced_at after
+        // backfill — synced_quantity/synced_at (base schema, generic) are
+        // the replacement. Both are written during the transition so a
+        // rollback to pre-migration code (which only reads
+        // ebay_synced_quantity) keeps working.
         ebay_synced_quantity: quantity,
         ebay_synced_at: new Date(),
         ebay_pending_reconcile_qty: null,
+        synced_quantity: quantity,
+        synced_at: new Date(),
         ...(seq != null ? { last_pushed_seq: seq } : {}),
       },
     },
-    // These are all eBay-discriminator-only fields (declared on ebaySchema,
-    // not MarketplaceListing's base schema) — a base-model update casts
-    // against the base schema only and silently drops anything it doesn't
-    // recognize under Mongoose's default strict mode. See the matching
-    // comment on inventory.service.js's own ebay_synced_quantity stamp.
+    // ebay_synced_quantity/ebay_synced_at/ebay_pending_reconcile_qty are
+    // eBay-discriminator-only fields (declared on ebaySchema, not
+    // MarketplaceListing's base schema) — a base-model update casts against
+    // the base schema only and silently drops anything it doesn't recognize
+    // under Mongoose's default strict mode. synced_quantity/synced_at/
+    // last_pushed_seq no longer need this (moved to the base schema), but
+    // the still-discriminator-only fields above do.
     { strict: false },
   );
 }
@@ -92,37 +149,101 @@ async function updateSyncBaseline(productId, variantId, quantity, tenantId, seq 
 // listing's category — e.g. "USED_GOOD" is invalid for a primary category
 // that only allows "USED_ACCEPTABLE" (eBay error 25021). We stay within the
 // same condition family (new-like vs. used-like) rather than jumping across.
+// used family ordered 3000 (USED_EXCELLENT) first, not 5000 (USED_GOOD):
+// 4000/5000/6000 are eBay's MEDIA grades (books, DVDs, games) — most eBay
+// Motors parts categories don't accept them at all, only 3000/6000/7000, so
+// leading with a media-only grade picked the wrong one whenever a category
+// happened to accept more than one used-family id. See normalizeCondition's
+// own comment in ebay.api.service.js for the matching default-mapping fix.
 const CONDITION_FALLBACK_ORDER = {
   new: ["NEW", "NEW_OTHER", "LIKE_NEW", "CERTIFIED_REFURBISHED", "EXCELLENT_REFURBISHED", "VERY_GOOD_REFURBISHED", "GOOD_REFURBISHED", "SELLER_REFURBISHED"],
-  used: ["USED_GOOD", "USED_VERY_GOOD", "USED_EXCELLENT", "USED_ACCEPTABLE", "FOR_PARTS_OR_NOT_WORKING"],
+  used: ["USED_EXCELLENT", "USED_VERY_GOOD", "USED_GOOD", "USED_ACCEPTABLE", "FOR_PARTS_OR_NOT_WORKING"],
 };
+
+// Thrown by resolveCategoryCondition when a listing's condition could not be
+// verified against eBay's per-category policy — the lookup either threw or
+// came back with no accepted conditions at all. `.status = 400` is what
+// circuitBreaker.js's isTransportOrAuthFailure keys off to classify this as
+// a per-item data problem, not a transport/auth failure (same convention as
+// every other 400-level rejection) — a bad/unverifiable condition on ONE
+// listing says nothing about whether this tenant's eBay connection itself
+// is healthy, and must never pause syncing for every other listing.
+// `.code` is a stable, machine-readable identifier that flows through into
+// the listing's ChannelSyncLog row (see sync.service.js's catch block).
+class ConditionUnverifiedError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ConditionUnverifiedError";
+    this.status = 400;
+    this.code = "CONDITION_UNVERIFIED";
+  }
+}
 
 // Resolves the stored listing condition to one eBay actually accepts for the
 // listing's primary category, cross-checking against the Sell Metadata API's
 // per-category condition policy instead of assuming a static mapping is
 // always valid (it isn't — accepted conditions vary by category).
-async function resolveCategoryCondition(rawCondition, categoryId, settings) {
-  const fallback = normalizeCondition(rawCondition);
-  if (!categoryId) return fallback;
-
-  try {
-    const { conditions } = await getConditionPolicies(categoryId, settings);
-    const validIds = conditions.map((c) => c.conditionId);
-    if (validIds.length === 0 || validIds.includes(fallback)) return fallback;
-
-    const family = fallback === "NEW" ? "new" : "used";
-    const preferred = CONDITION_FALLBACK_ORDER[family].find((c) => validIds.includes(c));
-    if (preferred) {
-      logger.warn(`[EbayAdapter] condition "${fallback}" invalid for category ${categoryId} — using "${preferred}" instead`);
-      return preferred;
-    }
-
-    logger.warn(`[EbayAdapter] condition "${fallback}" invalid for category ${categoryId} and no same-family match — using "${validIds[0]}" instead`);
-    return validIds[0];
-  } catch (err) {
-    logger.warn(`[EbayAdapter] could not verify condition policies for category ${categoryId}: ${err.message}`);
+//
+// "We could not verify this" and "we verified this and it's fine" used to
+// both silently resolve to the same fallback condition — an empty policy
+// list, or the lookup itself throwing, both just returned the raw,
+// unverified condition and let it through to eBay, which only ever caught
+// the mismatch much later, at publishOffer, with a far less useful error
+// (25021 — see this function's own git history for the incident that
+// exposed it: a sandbox/production Metadata-API URL mismatch made every
+// lookup fail, silently, for a sandbox-connected tenant). Both are now a
+// hard failure — a wrong/unverifiable condition is a listing-data problem
+// the merchant must fix, not something worth silently guessing at and
+// deferring to a much more confusing eBay-side rejection.
+async function resolveCategoryCondition(rawCondition, categoryId, settings, sku = null) {
+  const fallback = normalizeCondition(rawCondition, sku);
+  if (!categoryId) {
+    // publish() throws on a missing ebay_category_id immediately after this
+    // call anyway (update() logs+skips the offer step) — nothing to verify
+    // against without one, so this stays a silent early return, just made
+    // traceable for anyone debugging why verification never ran.
+    logger.debug(`[EbayAdapter] resolveCategoryCondition: no ebay_category_id yet — using "${fallback}" unverified`);
     return fallback;
   }
+
+  const marketplaceId = settings?.marketplace_id || "unknown";
+  const sandbox = !!settings?.sandbox;
+
+  let conditions;
+  try {
+    ({ conditions } = await getConditionPolicies(categoryId, settings));
+  } catch (err) {
+    logger.warn(
+      `[EbayAdapter] condition policy lookup failed for category ${categoryId} (marketplace ${marketplaceId}, sandbox=${sandbox}): ${err.message}`,
+    );
+    throw new ConditionUnverifiedError(
+      `Could not verify item condition for eBay category ${categoryId}: condition policy lookup failed (${err.message})`,
+    );
+  }
+
+  const validIds = conditions.map((c) => c.conditionId);
+
+  if (validIds.length === 0) {
+    logger.warn(
+      `[EbayAdapter] condition policy lookup for category ${categoryId} (marketplace ${marketplaceId}, sandbox=${sandbox}) returned no accepted conditions`,
+    );
+    throw new ConditionUnverifiedError(
+      `Could not verify item condition for eBay category ${categoryId}: eBay returned no accepted conditions for this category`,
+    );
+  }
+
+  // Verified — happy path, stays silent so logs don't get noisy.
+  if (validIds.includes(fallback)) return fallback;
+
+  const family = fallback === "NEW" ? "new" : "used";
+  const preferred = CONDITION_FALLBACK_ORDER[family].find((c) => validIds.includes(c));
+  if (preferred) {
+    logger.warn(`[EbayAdapter] condition "${fallback}" invalid for category ${categoryId} — using "${preferred}" instead`);
+    return preferred;
+  }
+
+  logger.warn(`[EbayAdapter] condition "${fallback}" invalid for category ${categoryId} and no same-family match — using "${validIds[0]}" instead`);
+  return validIds[0];
 }
 
 function isPriceLockedBySaleError(err) {
@@ -211,7 +332,7 @@ async function publish(resolved, settings, hooks = {}, seq = null) {
   // visibility, but only after this write succeeds — see its own comment.
 
   // Step 1 — inventory item
-  const condition = await resolveCategoryCondition(listing.condition, listing.ebay_category_id, settings);
+  const condition = await resolveCategoryCondition(listing.condition, listing.ebay_category_id, settings, resolved.sku);
   const inventoryItem = buildInventoryItemFromResolved(resolved, quantity, condition, settings);
   await upsertInventoryItem(token, settings, inventoryItem);
   logger.info(`[EbayAdapter] inventory_item upserted: ${resolved.sku} (qty: ${quantity ?? "untracked"})`);
@@ -284,7 +405,7 @@ async function update(resolved, settings, hooks = {}, seq = null) {
   // Push 0 normally — see the matching comment in publish() above.
 
   // Step 1 — sync inventory item
-  const condition = await resolveCategoryCondition(listing.condition, listing.ebay_category_id, settings);
+  const condition = await resolveCategoryCondition(listing.condition, listing.ebay_category_id, settings, resolved.sku);
   const inventoryItem = buildInventoryItemFromResolved(resolved, quantity, condition, settings);
   await upsertInventoryItem(token, settings, inventoryItem);
   logger.info(`[EbayAdapter] inventory_item upserted (update): ${resolved.sku} (qty: ${quantity ?? "untracked"})`);
@@ -367,4 +488,16 @@ async function end(listing) {
   logger.info(`[EbayAdapter] listing ended: ${sku}`);
 }
 
-module.exports = { key, publish, update, end };
+module.exports = {
+  key,
+  manifest,
+  capabilities,
+  loadSettings,
+  publish,
+  update,
+  end,
+  // Exported for tests (ebay.adapter.condition.test.js) — not part of the
+  // generic adapter contract.
+  resolveCategoryCondition,
+  ConditionUnverifiedError,
+};

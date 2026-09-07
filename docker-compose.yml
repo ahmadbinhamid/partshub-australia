@@ -26,25 +26,16 @@ services:
       - default
       - pha-net
 
-  worker-email:
+  # Replaces the old worker-ebay — same container role, now runs the
+  # channel-agnostic worker (workers/channel.worker.js) covering every
+  # registered marketplace adapter, not just eBay. See
+  # server/docs/channel-architecture.md for the deploy order this depends on
+  # (code deploy must land before this rename takes effect).
+  worker-channels:
     build:
       context: ./server
       dockerfile: Dockerfile
-    command: node src/workers/email.worker.js
-    env_file: ./server/.env.production
-    volumes:
-      - uploads:/app/uploads
-      - logs:/app/logs
-    depends_on:
-      - mongo
-      - redis
-    restart: unless-stopped
-
-  worker-ebay:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    command: node src/workers/ebay.worker.js
+    command: node --max-old-space-size=256 src/workers/channel.worker.js
     env_file: ./server/.env.production
     volumes:
       - uploads:/app/uploads
@@ -58,7 +49,7 @@ services:
     build:
       context: ./server
       dockerfile: Dockerfile
-    command: node src/workers/stripe.worker.js
+    command: node --max-old-space-size=256 src/workers/stripe.worker.js
     env_file: ./server/.env.production
     volumes:
       - uploads:/app/uploads
@@ -68,11 +59,14 @@ services:
       - redis
     restart: unless-stopped
 
-  worker-search:
+  # Replaces the old worker-email + worker-search — both are low-volume job
+  # types that don't need a dedicated container each; merged into one
+  # process (workers/platform.worker.js).
+  worker-platform:
     build:
       context: ./server
       dockerfile: Dockerfile
-    command: node src/workers/search.worker.js
+    command: node --max-old-space-size=256 src/workers/platform.worker.js
     env_file: ./server/.env.production
     volumes:
       - uploads:/app/uploads

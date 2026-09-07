@@ -57,9 +57,21 @@ async function acceptReconciliation(id, tenantId, userId) {
 
   await MarketplaceListing.updateOne(
     { _id: row.listing, tenant_id: tenantId },
-    { $set: { ebay_synced_quantity: row.ebay_qty, ebay_synced_at: new Date(), ebay_pending_reconcile_qty: null } },
-    // eBay-discriminator-only fields — see ebay.adapter.js#updateSyncBaseline's
-    // comment for why a base-model updateOne needs strict: false here.
+    {
+      $set: {
+        // TODO(dual-write): remove ebay_synced_quantity after backfill — see
+        // MarketplaceListing.js. synced_quantity is the generic replacement.
+        ebay_synced_quantity: row.ebay_qty,
+        ebay_synced_at: new Date(),
+        ebay_pending_reconcile_qty: null,
+        synced_quantity: row.ebay_qty,
+        synced_at: new Date(),
+      },
+    },
+    // ebay_synced_quantity/ebay_synced_at/ebay_pending_reconcile_qty are
+    // still eBay-discriminator-only fields — see
+    // ebay.adapter.js#updateSyncBaseline's comment for why a base-model
+    // updateOne needs strict: false to write those.
     { strict: false },
   );
 

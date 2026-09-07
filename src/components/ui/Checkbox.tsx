@@ -20,7 +20,14 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(functi
   { className, label, description, id, size = "md", ...props },
   ref,
 ) {
-  const inputId = id ?? React.useId();
+  // NOTE (lint fix): React.useId() was called on the right side of `??`,
+  // so it only actually ran on renders where `id` was falsy — a real
+  // rules-of-hooks violation (the number of hooks called can change
+  // between renders of the same instance if a caller's `id` prop toggles
+  // between set/unset). Called unconditionally now; the `??` only picks
+  // between the two already-computed values.
+  const generatedId = React.useId();
+  const inputId = id ?? generatedId;
   const s = checkboxSizes[size];
 
   return (

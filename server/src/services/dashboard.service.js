@@ -16,7 +16,7 @@ const MarketplaceListing = require("../models/MarketplaceListing");
 const InventorySettings = require("../models/InventorySettings");
 const Tenant = require("../models/Tenant");
 const { ORDER_STATUS } = require("../constants/order.constants");
-const { LISTING_STATE, MARKETPLACE_PLATFORM } = require("../constants/marketplace.constants");
+const { LISTING_STATE } = require("../constants/marketplace.constants");
 const { buildWordSearchOr } = require("../utils/regex");
 const { formatOrderNumber, stripOrderNumberPrefix } = require("../utils/orderNumberFormat");
 
@@ -77,14 +77,15 @@ async function getPendingOrdersStats(tenantId) {
   };
 }
 
-// Only Storefront and eBay are real channels in this system today — no
-// Amazon/Walmart/Shopify integration exists, so this never fabricates rows
-// for platforms that aren't actually connected. eBay's health is measured
-// by what fraction of its active listings are currently in sync.
-async function getChannelHealth(tenantId) {
+// A platform's health is measured by what fraction of its ACTIVE listings
+// are currently in sync — one query per registered adapter (eBay, Google,
+// any future one), not hardcoded per platform. Extracted so getChannelHealth
+// below can just map this over registry.getAll() instead of duplicating this
+// same block again for every new channel — see that function's own comment.
+async function getPlatformChannelHealth(tenantId, adapter) {
   const listings = await MarketplaceListing.find({
     tenant_id: tenantId,
-    platform: MARKETPLACE_PLATFORM.EBAY,
+    platform: adapter.key,
     state: LISTING_STATE.ACTIVE,
   })
     .select("sync_status synced_at")
@@ -98,6 +99,28 @@ async function getChannelHealth(tenantId) {
     null,
   );
 
+  return {
+    key: adapter.key,
+    name: adapter.manifest?.name || adapter.key,
+    status: total === 0 ? "not_connected" : erroredCount > 0 ? "attention" : "operational",
+    lastSyncedAt,
+    listingsSynced: syncedCount,
+    listingsTotal: total,
+  };
+}
+
+// Storefront is the only channel that isn't a registered marketplace adapter
+// (it's always available, no external sync concept) — kept as one hardcoded
+// row for that reason; every other channel comes from registry.getAll(), so
+// a new adapter (Google today, anything registered later) shows up here with
+// zero changes to this function once it's registered — see
+// registerAdapters.js.
+async function getChannelHealth(tenantId) {
+  const registry = require("./marketplace/registry");
+  const platformChannels = await Promise.all(
+    registry.getAll().map((adapter) => getPlatformChannelHealth(tenantId, adapter)),
+  );
+
   const channels = [
     {
       key: "storefront",
@@ -106,18 +129,13 @@ async function getChannelHealth(tenantId) {
       lastSyncedAt: null,
       detail: "Always available — no external sync",
     },
-    {
-      key: "ebay",
-      name: "eBay",
-      status: total === 0 ? "not_connected" : erroredCount > 0 ? "attention" : "operational",
-      lastSyncedAt,
-      listingsSynced: syncedCount,
-      listingsTotal: total,
-    },
+    ...platformChannels,
   ];
 
   const operationalCount = channels.filter((c) => c.status === "operational").length;
-  const stabilityPct = total === 0 ? 100 : Math.round((syncedCount / total) * 100);
+  const totalListings = platformChannels.reduce((sum, c) => sum + c.listingsTotal, 0);
+  const totalSynced = platformChannels.reduce((sum, c) => sum + c.listingsSynced, 0);
+  const stabilityPct = totalListings === 0 ? 100 : Math.round((totalSynced / totalListings) * 100);
 
   return { channels, operationalCount, totalChannels: channels.length, stabilityPct };
 }

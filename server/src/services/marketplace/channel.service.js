@@ -9,6 +9,7 @@ const ChannelSyncLog = require("../../models/ChannelSyncLog");
 const MarketplaceListing = require("../../models/MarketplaceListing");
 const { enqueueChannelJob } = require("../../queues/channel.queue");
 const { CHANNEL_CONNECTION_STATUS } = require("../../constants/channel.constants");
+const { LISTING_SYNC_STATUS } = require("../../constants/marketplace.constants");
 
 function storefrontUnavailableReason(manifestName) {
   return `${manifestName} requires a verified storefront domain — connect and verify one under Settings > Domains before connecting ${manifestName}.`;
@@ -49,19 +50,35 @@ async function listChannelsForTenant(tenantId) {
   const anyRequiresStorefront = manifests.some((m) => m.requiresStorefront);
   const [connections, listingCounts, hasVerifiedDomain] = await Promise.all([
     ChannelConnection.find({ tenant_id: tenantId }).lean(),
+    // lastSyncedAt per (platform, sync_status) bucket — reduced to one
+    // per-platform max below. Deliberately the max across EVERY bucket, not
+    // just "synced", so a channel whose most recent activity was e.g. an
+    // error still shows a real "last synced" time rather than null.
     MarketplaceListing.aggregate([
       { $match: { tenant_id: tenantId } },
-      { $group: { _id: { platform: "$platform", sync_status: "$sync_status" }, count: { $sum: 1 } } },
+      {
+        $group: {
+          _id: { platform: "$platform", sync_status: "$sync_status" },
+          count: { $sum: 1 },
+          lastSyncedAt: { $max: "$synced_at" },
+        },
+      },
     ]),
     anyRequiresStorefront ? require("../domain.service").hasVerifiedDefaultDomain(tenantId) : Promise.resolve(true),
   ]);
 
   const connByPlatform = new Map(connections.map((c) => [c.platform, c]));
   const countsByPlatform = new Map();
+  const lastSyncedAtByPlatform = new Map();
   for (const row of listingCounts) {
     const { platform, sync_status } = row._id;
     if (!countsByPlatform.has(platform)) countsByPlatform.set(platform, {});
     countsByPlatform.get(platform)[sync_status] = row.count;
+
+    if (row.lastSyncedAt) {
+      const current = lastSyncedAtByPlatform.get(platform);
+      if (!current || row.lastSyncedAt > current) lastSyncedAtByPlatform.set(platform, row.lastSyncedAt);
+    }
   }
 
   return manifests.map((manifest) => {
@@ -73,6 +90,31 @@ async function listChannelsForTenant(tenantId) {
     // rather than letting them connect and silently get every product
     // disapproved — see checkStorefrontRequirement's own comment.
     const storefrontOk = !manifest.requiresStorefront || hasVerifiedDomain;
+    const listingCountsForPlatform = countsByPlatform.get(manifest.key) || {};
+    const consecutiveFailures = conn?.consecutive_failures || 0;
+
+    // The two LISTING_SYNC_STATUS values that mean "something's actually
+    // wrong with this specific listing" (per listingStatus.ts's own
+    // warn/danger badge variants on the frontend) — everything else
+    // (not_listed, pending, synced, out_of_stock) is a normal state, not an
+    // attention-worthy one.
+    const needsAttentionCount =
+      (listingCountsForPlatform[LISTING_SYNC_STATUS.ERROR] || 0) +
+      (listingCountsForPlatform[LISTING_SYNC_STATUS.PRICE_LOCKED] || 0);
+
+    // NOTE: computed once here (not left to the frontend) so "what counts as
+    // needing attention" stays a single, server-owned rule — folds in BOTH
+    // per-listing trouble (needsAttentionCount) and connection-level trouble
+    // (a tripped circuit breaker, or any recorded failure streak) even when
+    // every existing listing still individually reads "synced". Mirrors
+    // dashboard.service.js#getPlatformChannelHealth's status logic, kept
+    // here instead of duplicated on a second endpoint.
+    const healthStatus =
+      needsAttentionCount > 0 ||
+      conn?.status === CHANNEL_CONNECTION_STATUS.DEGRADED ||
+      consecutiveFailures > 0
+        ? "needs_attention"
+        : "healthy";
 
     return {
       ...manifest,
@@ -85,10 +127,13 @@ async function listChannelsForTenant(tenantId) {
         last_error: conn?.last_error || null,
       },
       health: {
-        consecutive_failures: conn?.consecutive_failures || 0,
+        consecutive_failures: consecutiveFailures,
         last_success_at: conn?.last_success_at || null,
       },
-      listing_counts: countsByPlatform.get(manifest.key) || {},
+      listing_counts: listingCountsForPlatform,
+      last_synced_at: lastSyncedAtByPlatform.get(manifest.key) || null,
+      needs_attention_count: needsAttentionCount,
+      health_status: healthStatus,
     };
   });
 }

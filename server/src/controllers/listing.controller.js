@@ -14,7 +14,7 @@ const { success, notFound, systemfailure } = require("../utils/http/response");
 exports.getListings = async (req, res) => {
   try {
     const { page, limit, skip } = req.pagination;
-    const { product, product_in, platform, state, sync_status, search, group_by } = req.query;
+    const { product, product_in, platform, state, sync_status, needs_attention, search, group_by } = req.query;
 
     const args = [
       {
@@ -25,6 +25,7 @@ exports.getListings = async (req, res) => {
         platform,
         state,
         sync_status,
+        needs_attention,
         search,
       },
       req.tenantId,

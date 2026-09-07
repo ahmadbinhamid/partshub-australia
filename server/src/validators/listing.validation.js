@@ -19,6 +19,12 @@ const listListings = {
     platform: Joi.string().valid(...Object.values(MARKETPLACE_PLATFORM)),
     state: Joi.string().valid(...Object.values(LISTING_STATE)),
     sync_status: Joi.string().valid(...Object.values(LISTING_SYNC_STATUS)),
+    // Catalogue page's "Needs attention" segmented tab — expands server-side
+    // to sync_status in [error, price_locked] (see listing.query.service.js's
+    // NEEDS_ATTENTION_STATUSES) rather than the frontend hardcoding that
+    // set. Takes precedence over a plain sync_status if both are somehow
+    // sent — see that service's own NOTE.
+    needs_attention: Joi.boolean(),
     search: Joi.string().allow(""),
     // TASK 6: one row per PRODUCT (with all of that product's listings
     // nested under it) instead of one row per listing — see

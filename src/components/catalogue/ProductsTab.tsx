@@ -16,19 +16,20 @@ import {
 } from "@/components/ui/Modal";
 import { MultiSelect } from "@/components/ui/MultiSelect";
 import { FilterSelect } from "@/components/ui/FilterSelect";
-import { PageHeader } from "@/components/shared/PageHeader";
 import { ProductRow } from "@/components/products/ProductRow";
 import { ProductGrid, ProductGridSkeleton } from "@/components/products/ProductGrid";
 import { ViewToggle, type ViewMode } from "@/components/ui/ViewToggle";
 import { getProducts, deleteProduct, updateProduct } from "@/lib/api/products";
 import { getCategories } from "@/lib/api/categories";
 import { getListings } from "@/lib/api/listings";
+import { createGoogleListing } from "@/lib/api/googleListings";
 import { useToast } from "@/context";
 import type { Product } from "@/types/product";
 import type { AnyMarketplaceListing } from "@/types/marketplace";
+import type { ChannelSummary } from "@/types/channel";
 import { Pagination } from "@/components/ui/Pagination";
 import { DEFAULT_PAGE_SIZE, DEFAULT_PAGE_SIZE_GRID, PER_PAGE_OPTIONS_GRID } from "@/config/pagination";
-import { PLATFORM_LABEL, AVAILABLE_PLATFORMS } from "@/config/marketplacePlatforms";
+import { GOOGLE_LISTING_FORM_INITIAL } from "@/types/marketplace";
 import { Plus, Search, Package, Trash2, AlertTriangle } from "lucide-react";
 
 const STATUS_FILTERS = [
@@ -44,14 +45,13 @@ const STOCK_FILTERS = [
   { label: "Out of Stock", value: "out_of_stock" },
 ];
 
-const CHANNEL_FILTERS = [
-  { label: "All Channels", value: "" },
-  ...AVAILABLE_PLATFORMS.map((value) => ({ label: PLATFORM_LABEL[value], value })),
-  { label: "Not Listed", value: "none" },
-];
-
-// ── Page ─────────────────────────────────────────────────────────────────────
-export default function ProductsPage() {
+// Catalogue page's "Products" tab — product CRUD (grid/list, status/stock/
+// category filters, publish toggle, delete) merged with the per-channel
+// status view that used to be ListingsPage.tsx's default grouped-by-product
+// table. Channel SET comes from `channels` (GET /channels), never a
+// hardcoded platform list, so a newly-registered adapter appears here with
+// no changes to this file.
+export function ProductsTab({ channels }: { channels: ChannelSummary[] }) {
   const navigate = useNavigate();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -60,12 +60,12 @@ export default function ProductsPage() {
   const search = searchParams.get("search") ?? "";
   const status = searchParams.get("status") ?? "";
   const stock = searchParams.get("stock") ?? "";
-  const channel = searchParams.get("channel") ?? "";
+  const channelFilter = searchParams.get("p_channel") ?? "";
   const categories = searchParams.get("categories") ?? "";
   const view: ViewMode = searchParams.get("view") === "grid" ? "grid" : "list";
-  const page = parseInt(searchParams.get("page") ?? "1", 10);
+  const page = parseInt(searchParams.get("p_page") ?? "1", 10);
   const limit = parseInt(
-    searchParams.get("limit") ?? String(view === "grid" ? DEFAULT_PAGE_SIZE_GRID : DEFAULT_PAGE_SIZE),
+    searchParams.get("p_limit") ?? String(view === "grid" ? DEFAULT_PAGE_SIZE_GRID : DEFAULT_PAGE_SIZE),
     10,
   );
   const selectedCategories = categories ? categories.split(",") : [];
@@ -73,17 +73,30 @@ export default function ProductsPage() {
   const [inputValue, setInputValue] = useState(search);
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
   const [productColWidth, setProductColWidth] = useState<number | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
-  // Debounce search
+  const CHANNEL_FILTERS = [
+    { label: "All Channels", value: "" },
+    ...channels.map((c) => ({ label: c.name, value: c.key })),
+    { label: "Not Listed", value: "none" },
+  ];
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setSearchParams((prev) => {
         const current = prev.get("search") ?? "";
-        if (inputValue === current) return prev; // no change — don't reset page
+        if (inputValue === current) return prev;
         const next = new URLSearchParams(prev);
         if (inputValue) next.set("search", inputValue);
         else next.delete("search");
-        next.set("page", "1");
+        next.set("p_page", "1");
         return next;
       }, { replace: true });
     }, 400);
@@ -96,7 +109,7 @@ export default function ProductsPage() {
         const next = new URLSearchParams(prev);
         if (val) next.set("status", val);
         else next.delete("status");
-        next.set("page", "1");
+        next.set("p_page", "1");
         return next;
       }, { replace: true });
     },
@@ -109,20 +122,20 @@ export default function ProductsPage() {
         const next = new URLSearchParams(prev);
         if (val) next.set("stock", val);
         else next.delete("stock");
-        next.set("page", "1");
+        next.set("p_page", "1");
         return next;
       }, { replace: true });
     },
     [setSearchParams],
   );
 
-  const setChannel = useCallback(
+  const setChannelFilter = useCallback(
     (val: string) => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
-        if (val) next.set("channel", val);
-        else next.delete("channel");
-        next.set("page", "1");
+        if (val) next.set("p_channel", val);
+        else next.delete("p_channel");
+        next.set("p_page", "1");
         return next;
       }, { replace: true });
     },
@@ -133,7 +146,7 @@ export default function ProductsPage() {
     (p: number) => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
-        next.set("page", String(p));
+        next.set("p_page", String(p));
         return next;
       }, { replace: true });
     },
@@ -144,8 +157,8 @@ export default function ProductsPage() {
     (l: number) => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
-        next.set("limit", String(l));
-        next.set("page", "1");
+        next.set("p_limit", String(l));
+        next.set("p_page", "1");
         return next;
       }, { replace: true });
     },
@@ -158,7 +171,7 @@ export default function ProductsPage() {
         const next = new URLSearchParams(prev);
         if (ids.length) next.set("categories", ids.join(","));
         else next.delete("categories");
-        next.set("page", "1");
+        next.set("p_page", "1");
         return next;
       }, { replace: true });
     },
@@ -171,11 +184,8 @@ export default function ProductsPage() {
         const next = new URLSearchParams(prev);
         if (mode === "grid") next.set("view", "grid");
         else next.delete("view");
-        // Drop any explicit limit/page from the other mode — list and grid
-        // use different page-size options (grid's are multiples of its
-        // column counts), so a stale limit can mismatch the new mode's set.
-        next.delete("limit");
-        next.set("page", "1");
+        next.delete("p_limit");
+        next.set("p_page", "1");
         return next;
       }, { replace: true });
     },
@@ -183,8 +193,8 @@ export default function ProductsPage() {
   );
 
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ["products", { search, status, stock, channel, categories, page, limit }],
-    queryFn: () => getProducts({ search, status, stock, channel, categories, page, limit }),
+    queryKey: ["products", { search, status, stock, channel: channelFilter, categories, page, limit }],
+    queryFn: () => getProducts({ search, status, stock, channel: channelFilter, categories, page, limit }),
   });
 
   const { data: categoriesRes } = useQuery({
@@ -199,12 +209,10 @@ export default function ProductsPage() {
 
   const pageProductIds = (data?.data?.items ?? []).map((p) => p._id);
 
-  // Scoped to just this page's product ids (not a flat `limit`-capped fetch)
-  // so a tenant with >100 total listings on any one channel doesn't have
-  // older listings silently excluded — see
-  // listing.query.service.js#listListings. Mixes every platform's listings
-  // together (that endpoint is generic, not eBay-only), so a product's
-  // Channels badge shows Google alongside eBay without a second fetch.
+  // Full listing objects (not just platform names) so the expandable
+  // channel row can show real sync_status/synced_at, not just "is it on
+  // this channel at all" — same query ProductsPage.tsx always made, just no
+  // longer stripping the fields the new detail view needs.
   const { data: listingsData } = useQuery({
     queryKey: ["listings-for-products", pageProductIds],
     queryFn: () => getListings({ product_in: pageProductIds.join(",") }),
@@ -212,16 +220,16 @@ export default function ProductsPage() {
     staleTime: 30_000,
   });
 
-  const listingPlatformsMap = new Map<string, string[]>();
+  const listingsByProduct = new Map<string, AnyMarketplaceListing[]>();
   ((listingsData?.data?.items ?? []) as AnyMarketplaceListing[])
     .filter((l) => l.product != null)
     .forEach((l) => {
-      const id = typeof l.product === "string" ? l.product : (l.product as { _id: string })._id;
-      const platforms = listingPlatformsMap.get(id) ?? [];
-      if (!platforms.includes(l.platform)) listingPlatformsMap.set(id, [...platforms, l.platform]);
+      const id = typeof l.product === "string" ? l.product : l.product._id;
+      const existing = listingsByProduct.get(id) ?? [];
+      listingsByProduct.set(id, [...existing, l]);
     });
 
-  const listedProductIds = new Set(listingPlatformsMap.keys());
+  const listedProductIds = new Set(listingsByProduct.keys());
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteProduct(id),
@@ -249,29 +257,44 @@ export default function ProductsPage() {
     onError: (err: Error) => toast({ title: "Update failed", description: err.message, tone: "danger" }),
   });
 
+  // Products tab's per-channel "List" action — Google is a one-click toggle
+  // (mirrors ListingsPage.tsx's own listOnGoogleMutation); eBay needs its
+  // full create form, so that one navigates instead.
+  const listOnGoogleMutation = useMutation({
+    mutationFn: (productId: string) => createGoogleListing(productId, null, GOOGLE_LISTING_FORM_INITIAL),
+    onSuccess: () => {
+      toast({ title: "Queued for Google Shopping sync", tone: "success" });
+      queryClient.invalidateQueries({ queryKey: ["listings"] });
+    },
+    onError: (err: Error) => toast({ title: err.message, tone: "danger" }),
+  });
+
+  function handleOpenChannel(product: Product, platform: string) {
+    const listing = listingsByProduct.get(product._id)?.find((l) => l.platform === platform);
+    if (!listing) return;
+    if (listing.platform === "google") {
+      navigate(`/products/${product.slug}/edit`);
+      return;
+    }
+    navigate(`/listings/${listing._id}/edit`);
+  }
+
+  function handleListChannel(product: Product, platform: string) {
+    if (platform === "google") {
+      listOnGoogleMutation.mutate(product._id);
+    } else {
+      navigate(`/listings/new?product=${product._id}&productSlug=${product.slug}`);
+    }
+  }
+
   const products: Product[] = data?.data?.items ?? [];
   const total = data?.data?.total ?? 0;
   const totalPages = data?.data?.totalPages ?? 1;
   const isDeleteTargetListed = deleteTarget ? listedProductIds.has(deleteTarget._id) : false;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Products"
-        description={
-          total > 0
-            ? `${total} product${total !== 1 ? "s" : ""} in your catalogue`
-            : "Manage your product catalogue"
-        }
-      >
-        <Button variant="primary" size="md" className="gap-2" onClick={() => navigate("/products/new")}>
-          <Plus className="h-4 w-4" />
-          New Product
-        </Button>
-      </PageHeader>
-
+    <div className="space-y-4">
       <Card>
-        {/* Toolbar */}
         <div className="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="relative w-full max-w-xs">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40 pointer-events-none" />
@@ -289,7 +312,7 @@ export default function ProductsPage() {
             )}
             <FilterSelect options={STATUS_FILTERS} value={status} onChange={setStatus} />
             <FilterSelect options={STOCK_FILTERS} value={stock} onChange={setStock} />
-            <FilterSelect options={CHANNEL_FILTERS} value={channel} onChange={setChannel} />
+            <FilterSelect options={CHANNEL_FILTERS} value={channelFilter} onChange={setChannelFilter} />
             <MultiSelect
               options={categoryOptions}
               value={selectedCategories}
@@ -302,14 +325,10 @@ export default function ProductsPage() {
           </div>
         </div>
 
-        {/* List / Grid */}
         {isLoading ? (
-          view === "grid" ? <ProductGridSkeleton /> : <LoadingSkeleton />
+          view === "grid" ? <ProductGridSkeleton /> : <ProductsLoadingSkeleton />
         ) : products.length === 0 ? (
-          <EmptyState
-            search={search}
-            onNew={() => navigate("/products/new")}
-          />
+          <ProductsEmptyState search={search} onNew={() => navigate("/products/new")} />
         ) : view === "grid" ? (
           <ProductGrid
             products={products}
@@ -335,7 +354,12 @@ export default function ProductsPage() {
                   <TableHead>Status</TableHead>
                   <TableHead>Online</TableHead>
                   <TableHead>Stock</TableHead>
-                  <TableHead>Channels</TableHead>
+                  <TableHead>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-fg/30" aria-hidden="true" />
+                      Channels ({channels.length})
+                    </span>
+                  </TableHead>
                   <TableHead className="text-right">Price</TableHead>
                   <TableHead className="text-right">Created</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -346,7 +370,12 @@ export default function ProductsPage() {
                   <ProductRow
                     key={product._id}
                     product={product}
-                    listingPlatforms={listingPlatformsMap.get(product._id) ?? []}
+                    channels={channels}
+                    listings={listingsByProduct.get(product._id) ?? []}
+                    expanded={expandedIds.has(product._id)}
+                    onToggleExpand={() => toggleExpanded(product._id)}
+                    onOpenChannel={(platform) => handleOpenChannel(product, platform)}
+                    onListChannel={(platform) => handleListChannel(product, platform)}
                     columnWidth={productColWidth ?? undefined}
                     onColumnResize={setProductColWidth}
                     onClick={() => navigate(`/products/${product.slug}/edit`)}
@@ -374,7 +403,6 @@ export default function ProductsPage() {
         />
       </Card>
 
-      {/* Delete confirm modal */}
       <Modal
         open={!!deleteTarget}
         onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
@@ -434,7 +462,7 @@ export default function ProductsPage() {
 
 const SKEL_WIDTHS = [140, 180, 120, 160, 200, 130, 170, 150];
 
-function LoadingSkeleton() {
+function ProductsLoadingSkeleton() {
   return (
     <div className="divide-y divide-border">
       {SKEL_WIDTHS.map((w, i) => (
@@ -455,7 +483,7 @@ function LoadingSkeleton() {
   );
 }
 
-function EmptyState({ search, onNew }: { search: string; onNew: () => void }) {
+function ProductsEmptyState({ search, onNew }: { search: string; onNew: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
       <div className="flex h-16 w-16 items-center justify-center rounded-xs border border-border bg-bg-2">

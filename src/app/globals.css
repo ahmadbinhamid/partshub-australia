@@ -58,6 +58,18 @@
   --color-tag-neutral-bg: hsl(var(--tag-neutral-bg));
   --color-tag-neutral-fg: hsl(var(--tag-neutral-fg));
 
+  /* Categorical palette — for distinguishing N items by IDENTITY (which
+     channel/category/series this is), never by status/meaning. Only place
+     this is used today: the Catalogue page's per-channel identity dot
+     (ChannelIdentityDot). Not a substitute for the semantic tokens above —
+     those still own anything status-shaped (ok/warn/danger). */
+  --color-cat-1: hsl(var(--cat-1));
+  --color-cat-2: hsl(var(--cat-2));
+  --color-cat-3: hsl(var(--cat-3));
+  --color-cat-4: hsl(var(--cat-4));
+  --color-cat-5: hsl(var(--cat-5));
+  --color-cat-6: hsl(var(--cat-6));
+
   /* Spacing */
   --spacing-page: 0.5rem;
   --spacing-section: 1rem;
@@ -180,6 +192,14 @@
   --tag-info-fg: 217 80% 40%;
   --tag-neutral-bg: var(--bg-2);
   --tag-neutral-fg: var(--fg-2);
+
+  /* Categorical palette (light) */
+  --cat-1: 217 70% 52%;
+  --cat-2: 38 85% 47%;
+  --cat-3: 262 55% 55%;
+  --cat-4: 330 60% 52%;
+  --cat-5: 25 80% 48%;
+  --cat-6: 172 55% 38%;
 }
 
 .dark {
@@ -232,6 +252,15 @@
   --tag-info-fg: 213 85% 72%;
   --tag-neutral-bg: var(--bg-2);
   --tag-neutral-fg: var(--fg-2);
+
+  /* Categorical palette (dark) — brighter/higher-lightness than light mode's,
+     same hue family, for legibility on a dark card background. */
+  --cat-1: 217 75% 65%;
+  --cat-2: 38 85% 60%;
+  --cat-3: 262 65% 68%;
+  --cat-4: 330 70% 68%;
+  --cat-5: 25 85% 62%;
+  --cat-6: 172 55% 52%;
 }
 
 /* ─── Storefront — black/gold luxury theme ───────────────────────────────── */

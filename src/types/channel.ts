@@ -52,4 +52,16 @@ export interface ChannelSummary {
   connection: ChannelConnectionInfo;
   health: ChannelHealthInfo;
   listing_counts: Record<string, number>;
+  // Catalogue redesign — real per-platform "most recent listing sync"
+  // timestamp (distinct from health.last_success_at, which is the
+  // connection-level "last successful API call", not tied to a listing).
+  last_synced_at: string | null;
+  // Sum of this channel's listings in sync_status error/price_locked —
+  // computed server-side (channel.service.js) so the frontend never
+  // reimplements "what counts as needing attention".
+  needs_attention_count: number;
+  // Folds needs_attention_count together with connection-level trouble (a
+  // tripped circuit breaker, any recorded failure streak) into one verdict
+  // for the channel summary card's health line/dot.
+  health_status: "healthy" | "needs_attention";
 }

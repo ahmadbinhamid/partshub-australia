@@ -14,7 +14,7 @@ import ResetPasswordPage from "@/pages/ResetPasswordPage";
 
 // ERP pages
 import DashboardPage from "@/pages/erp/DashboardPage";
-import ProductsPage from "@/pages/erp/ProductsPage";
+import CataloguePage from "@/pages/erp/CataloguePage";
 import ProductCreatePage from "@/pages/erp/ProductCreatePage";
 import ProductEditPage from "@/pages/erp/ProductEditPage";
 import CategoriesPage from "@/pages/erp/CategoriesPage";
@@ -25,7 +25,6 @@ import OrdersPage from "@/pages/erp/OrdersPage";
 import OrderDetailPage from "@/pages/erp/OrderDetailPage";
 import CreateOrderPage from "@/pages/erp/CreateOrderPage";
 import PaymentsPage from "@/pages/erp/PaymentsPage";
-import ListingsPage from "@/pages/erp/ListingsPage";
 import ListingCreatePage from "@/pages/erp/ListingCreatePage";
 import ListingEditPage from "@/pages/erp/ListingEditPage";
 import ActivityLogPage from "@/pages/erp/ActivityLogPage";
@@ -99,7 +98,13 @@ export default function App() {
             }
           >
             <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/products" element={<ProductsPage />} />
+            <Route path="/catalogue" element={<CataloguePage />} />
+            {/* Redirects — /products and /listings merged into one
+                Catalogue page with Products/Listings tabs. Kept as
+                redirects (not removed) so any existing bookmark/deep link
+                still lands somewhere correct. */}
+            <Route path="/products" element={<Navigate to="/catalogue?tab=products" replace />} />
+            <Route path="/listings" element={<Navigate to="/catalogue?tab=listings" replace />} />
             <Route path="/products/new" element={<ProductCreatePage />} />
             <Route path="/products/:slug/edit" element={<ProductEditPage />} />
             <Route path="/categories" element={<CategoriesPage />} />
@@ -110,7 +115,6 @@ export default function App() {
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/orders/:id" element={<OrderDetailPage />} />
             <Route path="/payments" element={<PaymentsPage />} />
-            <Route path="/listings" element={<ListingsPage />} />
             <Route path="/listings/new" element={<ListingCreatePage />} />
             <Route path="/listings/:id/edit" element={<ListingEditPage />} />
             <Route path="/activity-log" element={<ActivityLogPage />} />

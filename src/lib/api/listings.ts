@@ -19,6 +19,11 @@ export interface ListingListParams {
   platform?: MarketplacePlatform;
   state?: string;
   sync_status?: string;
+  // Catalogue redesign — Listings tab's "Needs attention" segmented tab.
+  // Expands server-side to sync_status in [error, price_locked]; takes
+  // precedence over a plain sync_status if both are passed. See
+  // listing.query.service.js#NEEDS_ATTENTION_STATUSES.
+  needs_attention?: boolean;
   search?: string;
 }
 

@@ -21,7 +21,14 @@ const { enqueueChannelJob } = require("../../queues/channel.queue");
 const { buildWordSearchOr } = require("../../utils/regex");
 const ebaySettingsService = require("../ebay/ebay.settings.service");
 const { buildEbayItemUrl } = require("../ebay/ebay.listing.service");
-const { MARKETPLACE_PLATFORM } = require("../../constants/marketplace.constants");
+const { MARKETPLACE_PLATFORM, LISTING_SYNC_STATUS } = require("../../constants/marketplace.constants");
+
+// The two states that mean "something's actually wrong with this listing"
+// (matches channel.service.js#listChannelsForTenant's own needs_attention
+// definition, and listingStatus.ts's warn/danger badge variants on the
+// frontend) — everything else (not_listed/pending/synced/out_of_stock) is a
+// normal state, not an attention-worthy one.
+const NEEDS_ATTENTION_STATUSES = [LISTING_SYNC_STATUS.ERROR, LISTING_SYNC_STATUS.PRICE_LOCKED];
 
 // Same aggregation shape as ebay.listing.service.js#listListings (search
 // against the populated product's title/sku can't be done via .find()+populate
@@ -29,7 +36,10 @@ const { MARKETPLACE_PLATFORM } = require("../../constants/marketplace.constants"
 // to one platform. `platform` is an optional filter, not a requirement — the
 // default (omitted) returns every platform mixed together, which is exactly
 // what the Listings page's main table wants.
-async function listListings({ skip, limit, product, product_in, platform, state, sync_status, search } = {}, tenantId) {
+async function listListings(
+  { skip, limit, product, product_in, platform, state, sync_status, needs_attention, search } = {},
+  tenantId,
+) {
   const match = { tenant_id: tenantId };
   if (platform) match.platform = platform;
   if (product) match.product = mongoose.Types.ObjectId.createFromHexString(product);
@@ -42,7 +52,11 @@ async function listListings({ skip, limit, product, product_in, platform, state,
     match.product = { $in: product_in.map((id) => mongoose.Types.ObjectId.createFromHexString(id)) };
   }
   if (state) match.state = state;
-  if (sync_status) match.sync_status = sync_status;
+  // needs_attention takes precedence over a plain sync_status — the
+  // Listings page's "Needs attention" segmented tab passes this instead of
+  // (never alongside, in practice) a single sync_status value.
+  if (needs_attention) match.sync_status = { $in: NEEDS_ATTENTION_STATUSES };
+  else if (sync_status) match.sync_status = sync_status;
 
   const pipeline = [
     { $match: match },
@@ -138,7 +152,10 @@ const GROUPED_LISTING_PROJECTION = {
 // (filtered, exactly as before), (2) re-fetch every listing for exactly
 // those product ids with NO filters — the full-picture pass a grey cell's
 // meaning now depends on.
-async function listListingsGroupedByProduct({ skip, limit, product, product_in, platform, state, sync_status, search } = {}, tenantId) {
+async function listListingsGroupedByProduct(
+  { skip, limit, product, product_in, platform, state, sync_status, needs_attention, search } = {},
+  tenantId,
+) {
   const match = { tenant_id: tenantId };
   if (platform) match.platform = platform;
   if (product) match.product = mongoose.Types.ObjectId.createFromHexString(product);
@@ -146,7 +163,9 @@ async function listListingsGroupedByProduct({ skip, limit, product, product_in, 
     match.product = { $in: product_in.map((id) => mongoose.Types.ObjectId.createFromHexString(id)) };
   }
   if (state) match.state = state;
-  if (sync_status) match.sync_status = sync_status;
+  // See listListings' identical NOTE — needs_attention takes precedence.
+  if (needs_attention) match.sync_status = { $in: NEEDS_ATTENTION_STATUSES };
+  else if (sync_status) match.sync_status = sync_status;
 
   // ── Pass 1: which products qualify (filtered), paginated ──────────────────
   const findPipeline = [

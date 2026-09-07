@@ -16,7 +16,7 @@ export function NavItemsList({
   return (
     <ul className="space-y-0.5">
       {NAV_ITEMS.map((item) => {
-        const active = isNavItemActive(item.href, pathname);
+        const active = isNavItemActive(item, pathname);
         return (
           <li key={item.href}>
             <Link

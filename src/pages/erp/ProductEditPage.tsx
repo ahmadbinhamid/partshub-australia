@@ -390,29 +390,40 @@ function ProductEditForm({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="gap-1.5"
-              onClick={() => navigate(`/listings/new?product=${product._id}&productSlug=${product.slug}`)}
-            >
-              <ShoppingBag className="h-3.5 w-3.5" />
-              List on eBay
-            </Button>
-            {googleConnected && (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                className="gap-1.5"
-                disabled={listOnGoogleMutation.isPending}
-                onClick={() => listOnGoogleMutation.mutate()}
-              >
-                <ShoppingCart className="h-3.5 w-3.5" />
-                {listOnGoogleMutation.isPending ? "Listing…" : "List on Google Shopping"}
-              </Button>
-            )}
+            {/* NOTE: consolidated eBay + Google into one "List on Channel"
+                dropdown (was two separate buttons) — scales cleanly to more
+                channels later (one more DropdownMenuItem, not another
+                button), matching the DropdownMenu pattern already used
+                elsewhere in this header (status, Send Email). */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={listOnGoogleMutation.isPending}
+                >
+                  <ShoppingBag className="h-3.5 w-3.5" />
+                  {listOnGoogleMutation.isPending ? "Listing…" : "List on Channel"}
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => navigate(`/listings/new?product=${product._id}&productSlug=${product.slug}`)}
+                >
+                  <ShoppingBag className="h-3.5 w-3.5 text-fg/50" />
+                  List on eBay
+                </DropdownMenuItem>
+                {googleConnected && (
+                  <DropdownMenuItem onSelect={() => listOnGoogleMutation.mutate()}>
+                    <ShoppingCart className="h-3.5 w-3.5 text-fg/50" />
+                    List on Google Shopping
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               type="button"
               variant="primary"

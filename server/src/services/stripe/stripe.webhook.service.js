@@ -466,7 +466,21 @@ async function handleChargeRefundUpdated(sr, tenantId) {
   // Same defense-in-depth check as handlePaymentSucceeded/handleChargeRefunded
   // — refuse to act on a refund that doesn't belong to the tenant whose
   // webhook endpoint/secret Stripe just delivered against.
-  if (String(refund.tenant_id) !== String(tenantId)) {
+  //
+  // NOTE (Task 3 fix): only enforced when a tenantId was actually supplied.
+  // Unlike handlePaymentSucceeded/handleChargeRefunded (only ever called
+  // from handleEvent's webhook dispatcher, always with a real tenantId),
+  // this function is ALSO called directly by
+  // refund.reconciliation.service.js#reconcileStuckRefunds with no
+  // tenantId at all (mirrors reconcileStripeRefund(sr, payment, order),
+  // which has no tenantId parameter to begin with) — that caller already
+  // resolved `refund` via its own trusted, DB-driven lookup, not from
+  // unauthenticated webhook input, so there's no external tenant claim to
+  // cross-check against. Before this fix the unconditional strict-equal
+  // check compared refund.tenant_id against the string "undefined" and
+  // always failed for that caller — meaning the reconciliation sweep's
+  // auto-reversal never actually ran, not just this test's direct call.
+  if (tenantId != null && String(refund.tenant_id) !== String(tenantId)) {
     logger.error(
       `[stripe.webhook] tenant mismatch on charge.refund.updated for stripe refund ${sr.id}: ` +
         `webhook tenant=${tenantId}, resolved refund's tenant=${refund.tenant_id} — refusing to apply effects`,

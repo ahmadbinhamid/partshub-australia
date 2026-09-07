@@ -255,9 +255,15 @@ export default function ListingsPage() {
     // fetched on demand, the same way the eBay resave-before-push above
     // already fetches the full listing on demand too.
     if (listing.platform === "google") {
-      getListing(listing._id).then(({ data: full }) => {
-        if (full.platform === "google") setGoogleEditTarget(full);
-      });
+      // NOTE (lint fix): this floating promise had no .catch — a failed
+      // fetch (network error, 404 on a deleted listing) silently did
+      // nothing, with no feedback that "Edit" had failed. Matches this
+      // file's other mutations' onError convention.
+      getListing(listing._id)
+        .then(({ data: full }) => {
+          if (full.platform === "google") setGoogleEditTarget(full);
+        })
+        .catch((err: Error) => toast({ title: err.message, tone: "danger" }));
       return;
     }
     navigate(`/listings/${listing._id}/edit`);

@@ -15,5 +15,8 @@ startChannelWorker({ platforms: ["ebay"] }).catch((err) => {
   process.exit(1);
 });
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+// NOTE (lint fix): see channel.worker.js's own identical comment —
+// shutdown() already contains its own try/catch + process.exit(), so this
+// never actually rejects.
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

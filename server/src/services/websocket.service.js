@@ -44,7 +44,12 @@ function initialize(httpServer) {
 
     // Join a personal room so the server can target this user
     if (socket.user?.sub) {
-      socket.join(`user:${socket.user.sub}`);
+      // NOTE (lint fix): Socket#join is typed Promise<void> | void because
+      // socket.io supports async adapters (e.g. Redis) — this server uses
+      // the default in-memory adapter (no adapter configured), where join()
+      // is actually synchronous. `void` documents that this is a known,
+      // deliberately-ignored return, not a missed await.
+      void socket.join(`user:${socket.user.sub}`);
     }
 
     socket.on("disconnect", (reason) => {

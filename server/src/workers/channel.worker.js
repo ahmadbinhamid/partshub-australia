@@ -337,8 +337,13 @@ if (require.main === module) {
     logger.error(`[channelWorker] failed to start: ${err.message}`);
     process.exit(1);
   });
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+  // NOTE (lint fix): shutdown() already wraps its whole body in try/catch
+  // and calls process.exit() on either path, so it never actually rejects
+  // — `void` documents that the listener deliberately doesn't return/await
+  // shutdown()'s promise (a signal handler can't be async in any
+  // meaningful sense here), without changing behaviour.
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 module.exports = {

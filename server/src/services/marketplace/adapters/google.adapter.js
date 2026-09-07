@@ -221,7 +221,7 @@ function applyIdentifiers(attributes, identifiers, sku) {
 // non-HTTPS ADDITIONAL image is still just dropped with a warning, not
 // fatal — Google can still list the product on its primary photo alone.
 function buildProductInputFromResolved(resolved, settings, quantity, identifiers, productUrl) {
-  const { sku, title, description, price, photos, listing } = resolved;
+  const { sku, title, description, price, photos, listing, product } = resolved;
 
   const rawUrls = (photos || []).map((p) => (typeof p === "string" ? p : p?.url)).filter(Boolean);
   const primaryImageUrl = rawUrls[0] || null;
@@ -252,6 +252,33 @@ function buildProductInputFromResolved(resolved, settings, quantity, identifiers
       amountMicros: String(Math.round((price || 0) * 1_000_000)),
       currencyCode: settings.target_country ? currencyForCountry(settings.target_country) : "USD",
     },
+    // NOTE: per-product shipping override — Google flagged that we weren't
+    // sending this at all. product.shipping_cost already exists (settable
+    // in the product edit form) but was never mapped into the Merchant API
+    // payload until now. Same Price shape (amountMicros/currencyCode) v1
+    // uses for the `price` field above, not the older Content API v2.1's
+    // "value"/"currency" naming Google's own support message used.
+    // Omitted (not sent as 0) when unset, so a product with no override
+    // just falls back to whatever shipping rule Google account-level
+    // settings/shippingLabel already resolve to — never silently claims
+    // free shipping for a product nobody actually priced that way.
+    // maxHandlingTime/maxTransitTime deliberately left out — this app
+    // tracks neither anywhere, and fabricating a delivery-speed estimate
+    // Google shows to buyers is worse than omitting it (Google marks both
+    // "Recommended", not required).
+    ...(product?.shipping_cost != null
+      ? {
+          shipping: [
+            {
+              country: settings.target_country || "AU",
+              price: {
+                amountMicros: String(Math.round(product.shipping_cost * 1_000_000)),
+                currencyCode: settings.target_country ? currencyForCountry(settings.target_country) : "USD",
+              },
+            },
+          ],
+        }
+      : {}),
     ...(listing.google_product_category ? { googleProductCategory: listing.google_product_category } : {}),
     ...(listing.shipping_label ? { shippingLabel: listing.shipping_label } : {}),
     ...(listing.custom_label_0 ? { customLabel0: listing.custom_label_0 } : {}),

@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "scripts": {
     "dev": "concurrently -n \"FE,BE,PLATFORM,CHANNELS\" -c \"cyan,green,yellow,magenta\" \"npm run dev:fe\" \"npm run dev:be\" \"npm run dev:worker:platform\" \"npm run dev:worker:channels\"",
     "dev:fe": "vite",

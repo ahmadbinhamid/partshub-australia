@@ -24,18 +24,23 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # NOTE: 22, not 20 — the production server runs v22.23.1, which is
+          # the source of truth (see server/Dockerfile's own comment). This
+          # used to say 20, disagreeing with both the dev machine (v26) and
+          # prod; standardised on 22 everywhere in this round.
+          node-version: 22
           cache: npm
 
       - run: npm ci
 
-      # NOTE: Task 1's lint backlog (frontend: 102 warnings, 0 errors) means
-      # `npm run lint` currently exits 0 on its own — continue-on-error is
-      # kept anyway so a warning-only regression here never blocks CI, per
-      # the task's explicit "lint failures may warn rather than fail for
-      # now" instruction. Test failures below have no such allowance.
+      # NOTE: continue-on-error removed — eslint's own exit code already
+      # does the right thing here with no flag needed: it exits 0 when every
+      # violation is warning-severity (currently 0 errors / 102 warnings on
+      # this side) and exits 1 the moment a real error-severity violation
+      # exists. continue-on-error was doing nothing today and would have
+      # silently swallowed that future exit-1, which is the opposite of what
+      # "warnings stay non-fatal, errors break the build" means.
       - run: npm run lint
-        continue-on-error: true
 
       # tsc -b (build's own project-reference step) — matches `npm run
       # build`'s own first command, without the `vite build` half (CI has no
@@ -80,32 +85,63 @@ jobs:
       MONGO_URI: mongodb://127.0.0.1:27017/pha-ci
       REDIS_HOST: 127.0.0.1
       REDIS_PORT: 6379
-      # NOTE: config/index.js#security.encryptionKey has no default and
-      # tokenCipher.js throws without one — any test touching an encrypted
-      # field (eBay refresh_token, etc.) needs a real 32-byte hex value. This
-      # is a throwaway CI-only key with no connection to any real
-      # environment's ENCRYPTION_KEY — fine to keep in plain text here.
-      ENCRYPTION_KEY: f83f23af10d3e32db8ed137df9a1d8e5f5d817e0623b20ad0f051ce18228d9d5
+      # NOTE (maintenance): the single obvious place to update this when
+      # tests are added/removed — the "collected N tests" assertion step
+      # below reads it, rather than a number buried in a grep pattern.
+      # Considered deriving it from the test-file count instead, but file
+      # count != test count (one file commonly holds several `test()`/
+      # `t.test()` calls — this suite is 41 files but 186 tests), so there's
+      # no reliable derivation; a single named constant is the honest option.
+      EXPECTED_TEST_COUNT: "186"
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # NOTE: see frontend job's identical comment — 22 is the
+          # production version, not 20.
+          node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
 
       - run: npm ci
 
-      # Same non-blocking treatment as the frontend job — see that job's
-      # NOTE. Backend currently: 0 errors, 213 warnings.
+      # NOTE (Task 1d): generated fresh per run instead of a committed
+      # literal — nothing in this job needs a STABLE key across steps or
+      # jobs (this job is the only consumer, in a single shell environment
+      # for its whole duration via $GITHUB_ENV; the frontend job never
+      # touches encrypted fields at all), so a fresh throwaway key per run
+      # is strictly better than a fixed one with no downside here.
+      - run: echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      # NOTE: continue-on-error removed — see frontend job's identical NOTE.
+      # Backend currently: 0 errors, 213 warnings.
       - run: npm run lint
-        continue-on-error: true
 
       # Must fail the build — this is the one step Task 2 explicitly does
       # NOT get a continue-on-error/retry allowance. The suite is ~34s
       # locally and deterministic (186 tests, verified twice back-to-back
       # with no manual DB clearing); no retries added here on purpose — a
       # flaky run in CI is a real finding, not something to paper over.
-      - run: npm test
+      #
+      # NOTE (Task 1b): `tee` (not `>`) so the assertion step below can
+      # read it back without re-running the suite, while this step's own
+      # stdout/exit code are unaffected — `run:` steps on ubuntu-latest use
+      # `bash -eo pipefail` by default, so a non-zero `npm test` still fails
+      # THIS step even though it's the left side of a pipe.
+      - run: npm test 2>&1 | tee test-output.txt
+
+      # NOTE (Task 1b): a version-resolved-glob-to-nothing (or any other
+      # silent "ran fewer tests than it should have") would otherwise still
+      # exit 0 and go green. Matches on the exact TAP summary line node:test
+      # prints — verified this is really what Node 22 emits here (piped,
+      # non-TTY output defaults to the TAP reporter's "# tests N", not the
+      # "spec" reporter's "ℹ tests N" this session's dev machine happened to
+      # show on a newer Node) rather than assumed from the task description.
+      - run: |
+          grep -q "^# tests ${EXPECTED_TEST_COUNT}\$" test-output.txt || {
+            echo "Expected \"# tests ${EXPECTED_TEST_COUNT}\" in test output — got:"
+            grep "^# tests " test-output.txt || echo "(no '# tests' line found at all)"
+            exit 1
+          }

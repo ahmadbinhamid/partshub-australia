@@ -33,6 +33,7 @@ const { logger } = require("../loaders/logging");
 const emailService = require("./email/email.service");
 const { buildInvoicePdfBuffer } = require("../utils/pdf/invoicePdf");
 const { getCompanyProfile } = require("./tenantSettings.service");
+const notificationService = require("./notification.service");
 
 // GST-inclusive AU retail pricing: GST component = price / 11, never added on top.
 const GST_DIVISOR = 11;
@@ -311,6 +312,17 @@ async function createManualOrder(
   }
 
   await order.save();
+
+  // Best-effort — a broken notification pipeline must never fail order
+  // creation. Mirrors stripe.webhook.service.js#handlePaymentSucceeded's own
+  // "never let an email hiccup fail this webhook" try/catch around
+  // sendOrderConfirmation.
+  try {
+    await notificationService.notifyNewOrder(tenant._id, order);
+  } catch (err) {
+    logger.error(`[order.service] failed to notify new manual order ${order.order_number}`, { error: err.message });
+  }
+
   return order;
 }
 
@@ -713,6 +725,14 @@ async function createOrderFromEbayOrder(rawEbayOrder, tenant, settings) {
   await order.save();
 
   logger.info(`[order.service] imported eBay order ${mapped.externalOrderId} as ${order.order_number}`);
+
+  // Best-effort — see the identical comment in createManualOrder above.
+  try {
+    await notificationService.notifyNewOrder(tenant._id, order);
+  } catch (err) {
+    logger.error(`[order.service] failed to notify new eBay order ${order.order_number}`, { error: err.message });
+  }
+
   return order;
 }
 

@@ -17,6 +17,7 @@ import {
 import { useToast } from "@/context";
 import { getInventorySettings, updateInventorySettings } from "@/lib/api/inventory";
 import { inventorySettingsFormSchema, type InventorySettingsFormValues } from "@/lib/validation/inventorySettings";
+import { utcTimeToSydney, sydneyTimeToUtc } from "@/utils/timezone";
 
 interface InventorySettingsModalProps {
   open: boolean;
@@ -57,7 +58,9 @@ export function InventorySettingsModal({ open, onOpenChange }: InventorySettings
         threshold: String(settings.low_stock_threshold),
         emailEnabled: settings.email_notifications,
         email: settings.notification_email ?? "",
-        sendTime: settings.notification_send_time || "22:00",
+        // Stored in the DB as UTC — displayed/edited here in Sydney local
+        // time (see src/utils/timezone.ts for why Sydney is hardcoded).
+        sendTime: utcTimeToSydney(settings.notification_send_time || "22:00"),
       });
     }
   }, [settings, reset]);
@@ -68,7 +71,9 @@ export function InventorySettingsModal({ open, onOpenChange }: InventorySettings
         low_stock_threshold: Number(values.threshold) || 0,
         email_notifications: values.emailEnabled,
         notification_email: values.email || null,
-        notification_send_time: values.sendTime,
+        // Convert back to UTC before it hits the API — the form field
+        // itself is always Sydney local time.
+        notification_send_time: sydneyTimeToUtc(values.sendTime),
       }),
     onSuccess: () => {
       toast({ title: "Inventory settings saved", tone: "success" });

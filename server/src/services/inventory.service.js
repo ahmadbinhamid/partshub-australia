@@ -380,6 +380,56 @@ async function getTotalStockForProduct(productId) {
   return records.reduce((sum, r) => sum + (r.stock_count || 0), 0);
 }
 
+// Every (product, variant) whose total stock (summed across every location —
+// same aggregation shape as dashboard.service.js#getStockCounts, kept
+// deliberately identical so the dashboard's "low stock" tile and the
+// low-stock digest email (services/inventory-digest.service.js) never
+// disagree about what counts as low) is > 0 and <= threshold. Stock === 0 is
+// deliberately excluded — that's "out of stock", a different, already-
+// separately-surfaced state, not "low stock" needing a restock nudge.
+async function getLowStockItems(tenantId, lowStockThreshold) {
+  const rows = await Inventory.aggregate([
+    { $lookup: { from: "products", localField: "product", foreignField: "_id", as: "product" } },
+    { $unwind: "$product" },
+    { $match: { "product.deleted_at": null, "product.tenant_id": tenantId } },
+    {
+      $group: {
+        _id: { product: "$product._id", variant: "$variant" },
+        totalStock: { $sum: "$stock_count" },
+        productTitle: { $first: "$product.title" },
+        productSku: { $first: "$product.sku" },
+      },
+    },
+    { $match: { totalStock: { $gt: 0, $lte: lowStockThreshold } } },
+    {
+      $lookup: {
+        from: "productvariants",
+        localField: "_id.variant",
+        foreignField: "_id",
+        as: "variant",
+      },
+    },
+    { $unwind: { path: "$variant", preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        _id: 0,
+        product_id: "$_id.product",
+        variant_id: "$_id.variant",
+        title: "$productTitle",
+        // Variant SKU wins when the variant HAS one — matches how a variant
+        // is identified/sold everywhere else in this codebase (e.g.
+        // resolveSkuToIds above) — falls back to the parent product's SKU
+        // for a variant with no SKU of its own, or a non-variant product.
+        sku: { $ifNull: ["$variant.sku", "$productSku"] },
+        variant_name: "$variant.display_name",
+        stock: "$totalStock",
+      },
+    },
+    { $sort: { stock: 1 } },
+  ]);
+  return rows;
+}
+
 // ── SKU-based stock adjustment (used by eBay webhook and Stripe payment/refund) ─
 
 const FALLBACK_SKU_RE = /^ph-([0-9a-f]{24})(?:-([0-9a-f]{24}))?$/;
@@ -609,6 +659,7 @@ module.exports = {
   getHistory,
   getTotalStockForProductVariant,
   getTotalStockForProduct,
+  getLowStockItems,
   resolveSkuToIds,
   adjustStockForSku,
   adjustStockBySku,

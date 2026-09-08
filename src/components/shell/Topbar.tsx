@@ -4,6 +4,7 @@ import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { Button } from "@/components/ui/Button";
 import { UserMenu } from "@/components/shell/UserMenu";
 import { CommandPalette } from "@/components/shell/CommandPalette";
+import { NotificationBell } from "@/components/shell/NotificationBell";
 import { cn } from "@/utils/cn";
 import { useCart } from "@/context/cart";
 import { usePathname } from "@/hooks";
@@ -92,6 +93,7 @@ export function Topbar({ onOpenMobile }: { onOpenMobile: () => void }) {
                 </span>
               )}
             </Button>
+            <NotificationBell />
             <Button
               type="button"
               variant="ghost"

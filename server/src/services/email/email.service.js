@@ -299,6 +299,32 @@ async function sendProductInfo({ to, name, productTitle, productSku, attachments
   );
 }
 
+/**
+ * Send a tenant's daily low-stock digest — triggered by the
+ * low_stock_digest_sweep repeatable job, see
+ * services/inventory-digest.service.js. Always called with at least one
+ * item; the sweep never calls this for an empty digest (see that service's
+ * own comment on why — an empty "0 items low" email is just noise).
+ */
+async function sendLowStockDigest({ to, items, companyProfile, tenantId }) {
+  return enqueueEmailJob({
+    fromName: tenantFromName(companyProfile),
+    tenantId,
+    to,
+    subject: `Low Stock Alert — ${items.length} item${items.length === 1 ? "" : "s"} need attention`,
+    template: "lowStockDigest",
+    variables: {
+      items: items.map((i) => ({
+        title: i.variant_name ? `${i.title} — ${i.variant_name}` : i.title,
+        sku: i.sku || "—",
+        stock: i.stock,
+      })),
+      item_count: items.length,
+      ...tenantBrandVars(companyProfile),
+    },
+  });
+}
+
 module.exports = {
   sendOTP,
   accountVerified,
@@ -312,4 +338,5 @@ module.exports = {
   sendManualOrderReceipt,
   sendPaymentLink,
   sendProductInfo,
+  sendLowStockDigest,
 };

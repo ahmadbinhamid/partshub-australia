@@ -28,5 +28,6 @@ router.use("/vehicle-model", require("./vehicle-model.routes"));
 router.use("/dashboard", require("./dashboard.routes"));
 router.use("/tenant-settings", require("./tenantSettings.routes"));
 router.use("/domains", require("./domain.routes"));
+router.use("/notification", require("./notification.routes"));
 
 module.exports = router;

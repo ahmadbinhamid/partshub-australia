@@ -65,4 +65,15 @@ function initialize(httpServer) {
   return io;
 }
 
-module.exports = { initialize };
+// Targets the per-user rooms `initialize()` already joins each connection
+// to — no new room scheme needed. Best-effort: a caller's notification
+// pipeline should never throw just because no socket server is up yet
+// (e.g. under test), so this silently no-ops instead.
+function emitToUsers(userIds, event, payload) {
+  if (!io) return;
+  for (const userId of userIds) {
+    io.to(`user:${userId}`).emit(event, payload);
+  }
+}
+
+module.exports = { initialize, emitToUsers };

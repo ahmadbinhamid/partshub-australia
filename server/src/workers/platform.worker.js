@@ -10,10 +10,12 @@ require("dotenv").config();
 const { connectMongo } = require("../loaders/mongoose");
 require("../models/index"); // register all schemas before any populate()/query
 const { logger } = require("../loaders/logging");
+const config = require("../config");
 
 const { emailQueue } = require("../queues/email.queue");
 const { render } = require("../services/email/templateLoader");
 const { sendEmail } = require("../services/email/mailer");
+const inventoryDigestService = require("../services/inventory-digest.service");
 
 const { searchQueue } = require("../queues/search.queue");
 const { ensureProductsCollection } = require("../services/search/product.search.schema");
@@ -45,6 +47,46 @@ emailQueue.process("send", 5, async (job) => {
 emailQueue.isReady().then(() => logger.info("[emailQueue] ready"));
 emailQueue.on("completed", (job) => logger.info(`[emailQueue] completed ${job.id}`));
 emailQueue.on("failed", (job, err) => logger.error(`[emailQueue] failed ${job?.id}: ${err?.message}`));
+
+// ── low stock digest ─────────────────────────────────────────────────────────
+//
+// Reuses the existing emailQueue (a distinct job name, "send" is untouched)
+// rather than a whole new queue file — same reasoning channel.worker.js uses
+// putting its own refresh_stale sweep on the same per-platform queue as
+// sync_listing, not a separate one.
+
+emailQueue.process("low_stock_digest_sweep", 1, async () => {
+  logger.info("[emailQueue] low_stock_digest_sweep starting");
+  return inventoryDigestService.sweepLowStockDigests();
+});
+
+emailQueue.isReady().then(async () => {
+  // Bull keys a repeatable job by its INTERVAL, not just its jobId — clear
+  // any stale schedule before re-registering, same gotcha
+  // channel.worker.js#attachRefreshStaleScheduler already documents, or a
+  // config change (INVENTORY_DIGEST_SWEEP_INTERVAL_MINUTES) leaves two
+  // schedules running side by side in Redis.
+  const existing = await emailQueue.getRepeatableJobs();
+  for (const job of existing) {
+    if (job.name === "low_stock_digest_sweep") {
+      await emailQueue.removeRepeatableByKey(job.key);
+      logger.info(`[emailQueue] removed stale low_stock_digest_sweep schedule: ${job.key}`);
+    }
+  }
+
+  emailQueue.add(
+    "low_stock_digest_sweep",
+    {},
+    {
+      repeat: { every: config.inventory.digestSweepIntervalMinutes * 60 * 1000 },
+      jobId: "low_stock_digest_sweep_repeat",
+      removeOnComplete: true,
+      removeOnFail: false,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5_000 },
+    },
+  );
+});
 
 // ── search ────────────────────────────────────────────────────────────────────
 

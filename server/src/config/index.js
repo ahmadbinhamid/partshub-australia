@@ -196,6 +196,20 @@ const config = {
     refreshSweepEnabled: get("CHANNEL_REFRESH_SWEEP_ENABLED", "true") === "true",
   },
 
+  inventory: {
+    // How often the low-stock digest sweep runs — see
+    // workers/platform.worker.js / services/inventory-digest.service.js.
+    // notification_send_time is minute-granularity ("HH:MM"), so this needs
+    // to be frequent enough that no tenant's exact minute is ever skipped
+    // between two runs — 5 min matches the tightest existing sweep interval
+    // in this codebase (stripe.worker.js's reconcile_stuck_refunds).
+    digestSweepIntervalMinutes: getNum("INVENTORY_DIGEST_SWEEP_INTERVAL_MINUTES", 5),
+    // Kill switch — checked at sweep TIME (inventory-digest.service.js),
+    // not at schedule-registration time — same pattern as
+    // channels.refreshSweepEnabled above.
+    digestSweepEnabled: get("INVENTORY_DIGEST_SWEEP_ENABLED", "true") === "true",
+  },
+
   stripe: {
     // BYOK — no platform-level secret/webhook/publishable key anymore; each
     // tenant supplies their own via Settings → Payment Account, stored

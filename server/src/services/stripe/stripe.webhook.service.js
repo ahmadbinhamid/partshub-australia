@@ -24,6 +24,7 @@ const { getTotalPaidForOrder } = require("../payment.service");
 const refundService = require("../refund.service");
 const emailService = require("../email/email.service");
 const { getCompanyProfile } = require("../tenantSettings.service");
+const notificationService = require("../notification.service");
 const { PAYMENT_STATUS, PAYMENT_PROVIDER } = require("../../constants/payment.constants");
 const { ORDER_CHANNEL, ORDER_DELIVERY_METHOD } = require("../../constants/order.constants");
 const { REFUND_REASON, REFUND_STATUS } = require("../../constants/refund.constants");
@@ -246,6 +247,20 @@ async function handlePaymentSucceeded(intent, tenantId) {
   // storefront-checkout confirmation, which assumes a storefront/eBay order
   // shape (e.g. sendOrderConfirmation's copy) that doesn't fit an in-person sale.
   if (order.channel === ORDER_CHANNEL.MANUAL) return;
+
+  // Best-effort — a broken notification pipeline must never fail this
+  // webhook. Manual orders are already notified at creation
+  // (order.service.js#createManualOrder); eBay orders never reach this
+  // handler at all (they create their own Payment directly, no Stripe
+  // webhook involved) — so this is the only place storefront orders get
+  // notified, deliberately deferred until payment actually succeeds rather
+  // than at order.service.js#createOrder (which only creates a
+  // PENDING_PAYMENT order) so an abandoned/unpaid checkout never notifies.
+  try {
+    await notificationService.notifyNewOrder(order.tenant_id, order);
+  } catch (err) {
+    logger.error(`[stripe.webhook] failed to notify new order ${order.order_number}`, { error: err.message });
+  }
 
   // Best-effort — never let an email hiccup fail this webhook. Throwing here
   // would make handleEvent release the processed-event claim and cause

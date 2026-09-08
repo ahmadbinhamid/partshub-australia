@@ -1,0 +1,32 @@
+{{> _header}}
+
+<div style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">
+  <p style="color: #666; font-size: 16px; line-height: 1.5;">
+    The following items at {{app_name}} are running low on stock ({{item_count}} total):
+  </p>
+
+  <table width="100%" cellpadding="8" cellspacing="0" style="border-collapse: collapse; margin-top: 12px;">
+    <thead>
+      <tr style="border-bottom: 2px solid #eee; text-align: left;">
+        <th style="font-size: 13px; color: #999;">SKU</th>
+        <th style="font-size: 13px; color: #999;">Product</th>
+        <th style="font-size: 13px; color: #999; text-align: right;">Stock</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each items}}
+      <tr style="border-bottom: 1px solid #f0f0f0;">
+        <td style="font-size: 14px; color: #333;">{{this.sku}}</td>
+        <td style="font-size: 14px; color: #333;">{{this.title}}</td>
+        <td style="font-size: 14px; color: #333; text-align: right;">{{this.stock}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+
+  <p style="color: #999; font-size: 13px; line-height: 1.5; margin-top: 20px;">
+    You're receiving this because low stock email alerts are enabled in Inventory Settings.
+  </p>
+</div>
+
+{{> _footer}}

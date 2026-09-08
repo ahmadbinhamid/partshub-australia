@@ -5,6 +5,7 @@ import {
   OrgSettingsProvider,
   CartProvider,
 } from "@/context";
+import { NotificationSocketProvider } from "@/context/socket";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 
 const queryClient = new QueryClient({
@@ -23,9 +24,11 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       <AuthProvider>
         <OrgSettingsProvider>
           <ToastProvider>
-            <CartProvider>
-              <TooltipProvider delayDuration={200}>{children}</TooltipProvider>
-            </CartProvider>
+            <NotificationSocketProvider>
+              <CartProvider>
+                <TooltipProvider delayDuration={200}>{children}</TooltipProvider>
+              </CartProvider>
+            </NotificationSocketProvider>
           </ToastProvider>
         </OrgSettingsProvider>
       </AuthProvider>

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/Table";
 import { StickyTableHead, StickyTableCell } from "@/components/ui/StickyTableColumn";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { DashboardSectionLabel } from "@/components/dashboard/DashboardSectionLabel";
 import { RecordReorderModal } from "@/components/dashboard/RecordReorderModal";
 import type { CriticalStockItem } from "@/types/dashboard";
@@ -36,7 +37,7 @@ export function CriticalStockCard({ items, loading }: { items: CriticalStockItem
         {loading ? (
           <div className="space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-12 animate-pulse rounded-md bg-bg-2" />
+              <Skeleton key={i} className="h-12" />
             ))}
           </div>
         ) : items.length === 0 ? (

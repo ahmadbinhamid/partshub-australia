@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/shared/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
 import { ChannelSummaryCard } from "@/components/channels/ChannelSummaryCard";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { ProductPickerModal } from "@/components/listings/ProductPickerModal";
 import { ProductsTab } from "@/components/catalogue/ProductsTab";
 import { ListingsTab } from "@/components/catalogue/ListingsTab";
@@ -87,9 +88,7 @@ export default function CataloguePage() {
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         {isLoading
-          ? Array.from({ length: 2 }).map((_, i) => (
-              <div key={i} className="h-16 animate-pulse rounded-md bg-bg-2" />
-            ))
+          ? Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-16" />)
           : channels.map((channel) => <ChannelSummaryCard key={channel.key} channel={channel} />)}
       </div>
 

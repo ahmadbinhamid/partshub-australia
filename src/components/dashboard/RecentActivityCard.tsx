@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { DashboardSectionLabel } from "@/components/dashboard/DashboardSectionLabel";
 import { ActivityEventRow } from "@/components/activity/ActivityEventRow";
 import type { ActivityEvent } from "@/types/dashboard";
@@ -16,7 +17,7 @@ export function RecentActivityCard({ events, loading }: { events: ActivityEvent[
 
       <CardContent className="flex-1 space-y-1 px-0 pt-4">
         {loading ? (
-          Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-14 animate-pulse rounded-md bg-bg-2" />)
+          Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-14" />)
         ) : events.length === 0 ? (
           <div className="py-10 text-center text-sm text-fg/45">No recent activity</div>
         ) : (

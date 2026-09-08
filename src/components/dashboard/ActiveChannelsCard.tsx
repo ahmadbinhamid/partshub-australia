@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { Activity } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { DashboardSectionLabel } from "@/components/dashboard/DashboardSectionLabel";
 import { cn } from "@/utils/cn";
 import { formatRelativeTime } from "@/utils/formatRelativeTime";
@@ -35,9 +36,7 @@ export function ActiveChannelsCard({ channels, loading }: { channels: ChannelHea
 
       <CardContent className="flex-1 space-y-2 px-0 pt-4">
         {loading ? (
-          Array.from({ length: 2 }).map((_, i) => (
-            <div key={i} className="h-14 animate-pulse rounded-md bg-bg-2" />
-          ))
+          Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-14" />)
         ) : (
           channels.map((channel) => (
             <div

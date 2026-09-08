@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { TooltipContentProps } from "recharts";
 import { Card } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { DashboardSectionLabel } from "@/components/dashboard/DashboardSectionLabel";
 import { cn } from "@/utils/cn";
 import { formatCurrencyFromCents } from "@/utils/format";
@@ -75,7 +76,7 @@ export function OrderVolumeChart({ points, loading }: { points: OrderVolumePoint
 
       <div className="mt-4 h-64 w-full">
         {loading ? (
-          <div className="h-full w-full animate-pulse rounded-md bg-bg-2" />
+          <Skeleton className="h-full w-full" />
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>

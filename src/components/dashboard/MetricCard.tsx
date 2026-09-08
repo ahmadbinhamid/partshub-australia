@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { cn } from "@/utils/cn";
 
 export function MetricCard({
@@ -42,15 +43,16 @@ export function MetricCard({
         </span>
         <span className="text-xs font-medium">{label}</span>
       </div>
-      <div
-        className={cn(
-          "mt-3 text-2xl font-semibold tracking-tight text-fg tabular-nums",
-          loading && "animate-pulse text-fg/30",
-        )}
-      >
-        {loading ? "—" : value}
-      </div>
-      {subLabel ? <div className="mt-1 text-xs text-fg/50">{subLabel}</div> : null}
+      {loading ? (
+        <Skeleton className="mt-3 h-7 w-20" />
+      ) : (
+        <div className="mt-3 text-2xl font-semibold tracking-tight text-fg tabular-nums">{value}</div>
+      )}
+      {loading ? (
+        <Skeleton className="mt-2 h-3 w-28" />
+      ) : subLabel ? (
+        <div className="mt-1 text-xs text-fg/50">{subLabel}</div>
+      ) : null}
     </Card>
   );
 }

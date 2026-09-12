@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, Landmark } from "lucide-react";
+import { CheckCircle2, Clock, Landmark, MapPin, Phone, Mail, User, Truck, ClipboardList, Shield, Scale, Heart } from "lucide-react";
 import { TenantLogo } from "@/components/branding/TenantLogo";
 import { getTenantSettings } from "@/lib/api/tenantSettings";
 import { formatCurrencyFromCents, getExclusiveUnitPrice, getLineGst, formatOrderNumber, formatInvoiceNumber } from "@/utils/format";
@@ -12,17 +12,63 @@ import type { OrderDetail } from "@/types/orders";
 // never disagree. Deliberately hardcoded to light/print-safe colors (not
 // the app's theme tokens) since this must stay legible on paper regardless
 // of whether the dashboard is in dark mode when "Print Invoice" is clicked.
+// (This is also why the payment-status badge below is hand-styled rather
+// than the shared <Badge> component, which pulls in theme-aware tokens.)
 
 const INK = "#18140f";
 const MUTED = "#6b6f7a";
 const ACCENT = "#c2790b";
 const BORDER = "#e2e0da";
-const TINT_BG = "#eef1f7";
+const TINT_BG = "#f6efe4";
+const GREEN = "#16a34a";
+const GREEN_BG = "#eaf6ec";
 
-function LabelRule({ children }: { children: React.ReactNode }) {
+const PAYMENT_STATUS_STYLES: Record<string, { label: string; bg: string }> = {
+  paid: { label: "Paid", bg: GREEN },
+  partially_paid: { label: "Partially Paid", bg: "#d97706" },
+  pending_payment: { label: "Pending", bg: "#6b7280" },
+  partially_refunded: { label: "Partially Refunded", bg: "#d97706" },
+  refunded: { label: "Refunded", bg: "#6b7280" },
+};
+
+function StatusBadge({ status }: { status: string }) {
+  const style = PAYMENT_STATUS_STYLES[status] ?? PAYMENT_STATUS_STYLES.pending_payment;
   return (
-    <div className="border-b pb-1.5 text-[11px] font-bold uppercase tracking-wider" style={{ color: MUTED, borderColor: BORDER }}>
+    <span
+      className="inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white"
+      style={{ background: style.bg }}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+function ColumnHeading({
+  icon: Icon,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider" style={{ color: ACCENT }}>
+      <Icon className="h-3.5 w-3.5" style={{ color: ACCENT }} />
       {children}
+    </div>
+  );
+}
+
+function ContactLine({
+  icon: Icon,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mt-1.5 flex items-center gap-2 text-[11px]" style={{ color: INK }}>
+      <Icon className="h-4 w-4 shrink-0" style={{ color: INK }} />
+      <span>{children}</span>
     </div>
   );
 }
@@ -51,16 +97,19 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
   const amountPaid = getTotalPaid(order.payments);
   const totalRefunded = getTotalRefunded(order.payments);
   // Item-level discounts plus any legacy order-level discount (see Order.js's
-  // discount_amount comment) — order.subtotal already nets these out, so
-  // Subtotal below adds them back to show the pre-discount figure, same
-  // convention as the dashboard's order-detail page.
+  // discount_amount comment) — order.subtotal already nets these out.
   const itemDiscount = order.items.reduce((sum, i) => sum + i.discount_amount, 0);
   const totalDiscount = itemDiscount + order.discount_amount;
+  // order.tax_amount is the authoritative GST embedded in order.subtotal
+  // (computed once at order-creation time from the POST-discount subtotal —
+  // order.service.js#GST_DIVISOR) — reused directly, matching
+  // invoicePdf.js's identical convention, so the emailed/downloaded PDF and
+  // this on-screen preview can never disagree about GST.
+  const gstAmount = order.tax_amount;
+  const exGstSubtotal = order.subtotal - gstAmount;
   // See utils/paymentTotals.ts#getBalanceDue — correctly distinguishes "paid
   // in full, then refunded" (due $0) from "never paid in full, then refunded
-  // on top of that" (due reflects the real remaining shortfall). The
-  // Balance Outstanding banner further below relies on this already being
-  // correct rather than separately suppressing itself for a refunded status.
+  // on top of that" (due reflects the real remaining shortfall).
   const amountDue = getBalanceDue(order.total, order.payments, order.payment_status);
   const orderDate = new Date(order.created_at).toLocaleDateString("en-AU", {
     year: "numeric",
@@ -78,6 +127,14 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
   });
   const billingAddress = order.billing_address ?? order.shipping_address;
   const channelLabel = order.channel === "ebay" ? "eBay" : order.channel === "manual" ? "In-Store" : "Storefront";
+  const orderNumberValue = order.reference_number || formatOrderNumber(order.order_number_prefix, order.order_number);
+  // Free-text field — rendered as a bullet list when the tenant typed it as
+  // separate lines, otherwise as a plain paragraph exactly as before. No
+  // schema change: this is purely how the existing string is displayed.
+  const warrantyLines = (tenant?.warranty_text || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   return (
     <div
@@ -93,48 +150,48 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
           <TenantLogo logoUrl={tenant?.logo_url} name={tenant?.company_name} sizeClass="h-14" maxWidthClass="max-w-[60px]" />
           <div>
             <h2 className="text-2xl font-black uppercase tracking-tight">{tenant?.company_name || "—"}</h2>
-            <div className="mt-1.5 text-xs" style={{ color: INK }}>
+            <ContactLine icon={MapPin}>
               {tenant?.pickup_location.address}
               {tenant?.pickup_location.address && tenant?.pickup_location.country ? ", " : ""}
               {tenant?.pickup_location.country}
-            </div>
-            <div className="mt-1 text-[11px]" style={{ color: MUTED }}>
-              <span className="font-semibold" style={{ color: INK }}>
-                ABN:
-              </span>{" "}
-              {tenant?.abn || "—"} &nbsp;|&nbsp;{" "}
-              <span className="font-semibold" style={{ color: INK }}>
-                PH:
-              </span>{" "}
-              {tenant?.phone || "—"}
-            </div>
-            <div className="mt-0.5 text-[11px]" style={{ color: MUTED }}>
-              <span className="font-semibold" style={{ color: INK }}>
-                EMAIL:
-              </span>{" "}
-              {tenant?.email || "—"}
-            </div>
-            <div className="mt-1.5 text-xs font-semibold" style={{ color: ACCENT }}>
-              Official Tax Invoice
+            </ContactLine>
+            {tenant?.phone && <ContactLine icon={Phone}>{tenant.phone}</ContactLine>}
+            {tenant?.email && <ContactLine icon={Mail}>{tenant.email}</ContactLine>}
+            <div className="mt-2 flex items-center gap-2">
+              <span
+                className="rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                style={{ borderColor: BORDER, color: MUTED }}
+              >
+                ABN
+              </span>
+              <span className="text-xs font-semibold" style={{ color: INK }}>
+                {tenant?.abn || "—"}
+              </span>
             </div>
           </div>
         </div>
         <div className="text-right" style={{ minWidth: 240 }}>
           <h1 className="text-3xl font-black uppercase tracking-tight">Tax Invoice</h1>
-          <p className="mt-1 text-sm font-bold" style={{ color: ACCENT }}>
+          <div className="mt-2 inline-block rounded-full px-3 py-1 text-sm font-bold text-white" style={{ background: ACCENT }}>
             {formatInvoiceNumber(order.invoice_number_prefix, order.invoice_number)}
-          </p>
-          <div className="mt-3 space-y-1">
-            <HeaderMetaRow label="Invoice Date:" value={orderDate} />
-            <HeaderMetaRow label="Due Date:" value="Upon Receipt" />
-            <HeaderMetaRow label="Printed:" value={printedAt} mutedValue />
+          </div>
+          <div className="mt-3 rounded-lg border text-left" style={{ borderColor: BORDER }}>
+            <div className="px-3 py-2">
+              <HeaderMetaRow label="Invoice Date" value={orderDate} />
+            </div>
+            <div className="border-t px-3 py-2" style={{ borderColor: BORDER }}>
+              <HeaderMetaRow label="Due Date" value="Upon Receipt" />
+            </div>
+            <div className="border-t px-3 py-2" style={{ borderColor: BORDER }}>
+              <HeaderMetaRow label="Printed" value={printedAt} mutedValue />
+            </div>
           </div>
         </div>
       </div>
 
       <div className="grid gap-6 py-6 sm:grid-cols-3">
         <div>
-          <LabelRule>Bill To</LabelRule>
+          <ColumnHeading icon={User}>Bill To</ColumnHeading>
           <div className="mt-2.5 text-sm font-bold">{order.customer.company_name || order.customer.name}</div>
           <div className="mt-1.5 space-y-0.5 text-xs" style={{ color: MUTED }}>
             {billingAddress && <div>{billingAddress.address}</div>}
@@ -149,7 +206,7 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
         </div>
 
         <div>
-          <LabelRule>Ship To</LabelRule>
+          <ColumnHeading icon={Truck}>Ship To</ColumnHeading>
           <div className="mt-2.5 text-sm font-bold">{order.customer.company_name || order.customer.name}</div>
           <div className="mt-1.5 space-y-0.5 text-xs" style={{ color: MUTED }}>
             {isPickup || !order.shipping_address ? (
@@ -166,12 +223,28 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
         </div>
 
         <div className="rounded-lg p-4" style={{ background: TINT_BG }}>
-          <LabelRule>Order Details</LabelRule>
-          <div className="mt-2.5 text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
-            Order Number
-          </div>
-          <div className="text-sm font-bold">
-            {order.reference_number || formatOrderNumber(order.order_number_prefix, order.order_number)}
+          <ColumnHeading icon={ClipboardList}>Order Information</ColumnHeading>
+          <div className="mt-3 space-y-2.5">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
+                Order Number
+              </div>
+              <div className="text-sm font-bold">{orderNumberValue}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
+                Sales Channel
+              </div>
+              <div className="text-sm font-bold">{channelLabel}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
+                Payment Status
+              </div>
+              <div className="mt-0.5">
+                <StatusBadge status={order.payment_status} />
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -247,113 +320,112 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
         </table>
       </div>
 
-      <div
-        // print:block + inline-block columns below, instead of keeping this
-        // a CSS grid at print time — see the breakInside comment on each
-        // column div just below for why break-inside:avoid moved down onto
-        // them individually instead of living here on the shared wrapper.
-        className="grid gap-8 pt-8 sm:grid-cols-2 print:block"
-      >
+      <div className="grid gap-8 pt-8 sm:grid-cols-2 print:block">
         <div
           className="print:inline-block print:w-[47%] print:align-top"
-          // break-inside:avoid belongs on each column individually, not on
-          // the two-column wrapper above — putting it on a box that's
-          // wide/tall enough to span most of the section (confirmed by
-          // reproducing outside the app) makes Chrome's print-pagination
-          // fit-estimate for that box unreliable: it can reserve far more
-          // height than the box actually needs and bump the whole thing to a
-          // fresh page, leaving a large blank gap behind on the page it left.
-          // Guarding each shorter column instead avoids that failure mode
-          // while still stopping either one from splitting mid-content.
           style={{ breakInside: "avoid", pageBreakInside: "avoid" }}
         >
-          <div className="rounded-lg p-4" style={{ background: TINT_BG }}>
-            <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider" style={{ color: MUTED }}>
-              <Landmark className="h-3.5 w-3.5" />
-              Bank Transfer Details
+          <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider" style={{ color: MUTED }}>
+            <Landmark className="h-3.5 w-3.5" />
+            Payment Details
+          </div>
+          <div className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
+                Bank Name
+              </div>
+              <div className="font-semibold">{tenant?.bank_details.bank_name || "—"}</div>
             </div>
-            <div className="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs">
-              <div>
-                <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
-                  Bank Name
-                </div>
-                <div className="font-semibold">{tenant?.bank_details.bank_name || "—"}</div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
+                Account Name
               </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
-                  Account Name
-                </div>
-                <div className="font-semibold">{tenant?.bank_details.account_name || tenant?.company_name || "—"}</div>
+              <div className="font-semibold">{tenant?.bank_details.account_name || tenant?.company_name || "—"}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
+                BSB
               </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
-                  BSB
-                </div>
-                <div className="font-semibold">{tenant?.bank_details.bsb || "—"}</div>
+              <div className="font-semibold">{tenant?.bank_details.bsb || "—"}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
+                Account No
               </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wide" style={{ color: MUTED }}>
-                  Account No
-                </div>
-                <div className="font-semibold">{tenant?.bank_details.account_number || "—"}</div>
-              </div>
+              <div className="font-semibold">{tenant?.bank_details.account_number || "—"}</div>
             </div>
           </div>
-          {amountPaid > 0 ? (
-            <div
-              className="mt-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold text-white"
-              style={{ background: "#16a34a" }}
-            >
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              Payment Received via {channelLabel}
-            </div>
-          ) : (
-            <div className="mt-3 text-xs" style={{ color: MUTED }}>
-              No payment recorded yet.
-            </div>
-          )}
         </div>
 
         <div
           className="space-y-1.5 text-sm print:inline-block print:w-[47%] print:ml-[4%] print:align-top"
           style={{ breakInside: "avoid", pageBreakInside: "avoid" }}
         >
-          <div className="flex justify-between">
-            <span style={{ color: MUTED }}>Subtotal</span>
-            <span className="font-semibold">{formatCurrencyFromCents(order.subtotal + totalDiscount)}</span>
-          </div>
-          {/* Always shown, even at $0 — combines every line item's own
-              discount with any legacy order-level discount. */}
-          <div className="flex justify-between">
-            <span style={{ color: MUTED }}>Discount</span>
-            <span className="font-semibold">
-              {totalDiscount > 0 ? `-${formatCurrencyFromCents(totalDiscount)}` : formatCurrencyFromCents(0)}
+          {/* Pre-discount subtotal + the discount itself only earn a line
+              when there actually is a discount — an order with none goes
+              straight from Subtotal (Ex GST) to GST to Freight, matching a
+              clean invoice with nothing to net out. */}
+          {totalDiscount > 0 && (
+            <>
+              <div className="flex justify-between gap-3">
+                <span style={{ color: MUTED }}>Subtotal</span>
+                <span className="whitespace-nowrap font-semibold">
+                  {formatCurrencyFromCents(order.subtotal + totalDiscount)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span style={{ color: MUTED }}>Discount</span>
+                <span className="whitespace-nowrap font-semibold">-{formatCurrencyFromCents(totalDiscount)}</span>
+              </div>
+            </>
+          )}
+          <div className="flex justify-between gap-3">
+            <span className="whitespace-nowrap" style={{ color: MUTED }}>
+              Subtotal <span className="text-[10px]">(Ex GST)</span>
             </span>
+            <span className="whitespace-nowrap font-semibold">{formatCurrencyFromCents(exGstSubtotal)}</span>
           </div>
-          <div className="flex justify-between">
+          <div className="flex justify-between gap-3">
+            <span style={{ color: MUTED }}>GST (11%)</span>
+            <span className="whitespace-nowrap font-semibold">{formatCurrencyFromCents(gstAmount)}</span>
+          </div>
+          <div className="flex justify-between gap-3">
             <span style={{ color: MUTED }}>{isPickup ? "Pickup" : "Freight / Shipping"}</span>
-            <span className="font-semibold">{formatCurrencyFromCents(order.shipping_cost)}</span>
+            <span className="whitespace-nowrap font-semibold">{formatCurrencyFromCents(order.shipping_cost)}</span>
           </div>
-          <div className="flex justify-between border-t pt-2 text-base" style={{ borderColor: BORDER }}>
-            <span className="font-bold">Total</span>
-            <span className="font-bold" style={{ color: ACCENT }}>
+          <div className="flex justify-between gap-3 border-t pt-2 text-base" style={{ borderColor: BORDER }}>
+            <span className="whitespace-nowrap font-bold">
+              TOTAL <span className="text-xs font-normal" style={{ color: MUTED }}>(Inc GST)</span>
+            </span>
+            <span className="whitespace-nowrap font-bold" style={{ color: ACCENT }}>
               {formatCurrencyFromCents(order.total)}
             </span>
           </div>
-          <div className="flex justify-between">
+          <div className="flex justify-between gap-3">
             <span style={{ color: MUTED }}>Total Paid</span>
-            <span className="font-semibold">{formatCurrencyFromCents(amountPaid)}</span>
+            <span className="whitespace-nowrap font-semibold">{formatCurrencyFromCents(amountPaid)}</span>
           </div>
           {totalRefunded > 0 && (
-            <div className="flex justify-between">
+            <div className="flex justify-between gap-3">
               <span style={{ color: MUTED }}>Total Refunded</span>
-              <span className="font-semibold">{formatCurrencyFromCents(totalRefunded)}</span>
+              <span className="whitespace-nowrap font-semibold">{formatCurrencyFromCents(totalRefunded)}</span>
             </div>
           )}
-          <div className="flex justify-between">
-            <span style={{ color: MUTED }}>Total Due</span>
-            <span className="font-semibold">{formatCurrencyFromCents(amountDue)}</span>
-          </div>
+          {amountDue === 0 ? (
+            <div className="flex items-center justify-between gap-3 rounded-lg px-3 py-2" style={{ background: GREEN_BG }}>
+              <span className="font-medium" style={{ color: GREEN }}>
+                Total Due
+              </span>
+              <span className="whitespace-nowrap font-semibold" style={{ color: GREEN }}>
+                {formatCurrencyFromCents(amountDue)}
+              </span>
+            </div>
+          ) : (
+            <div className="flex justify-between gap-3">
+              <span style={{ color: MUTED }}>Total Due</span>
+              <span className="whitespace-nowrap font-semibold">{formatCurrencyFromCents(amountDue)}</span>
+            </div>
+          )}
 
           {/* Every channel can carry an outstanding balance now that
               storefront/eBay prices can be edited post-payment — not just
@@ -361,17 +433,40 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
               Only rendered when there's an actual balance (amountDue > 0) —
               getBalanceDue already correctly returns 0 for an order that was
               paid in full before being refunded, so no separate refunded-
-              status check is needed here (and one would incorrectly hide a
-              real balance on an order that was never paid in full and later
-              had a partial refund on top of that). */}
+              status check is needed here. */}
           {amountDue > 0 && (
-            <div className="mt-3 flex items-center justify-between rounded-lg px-4 py-3" style={{ background: ACCENT }}>
-              <span className="text-xs font-bold uppercase tracking-wider text-white">Balance Outstanding</span>
-              <span className="text-sm font-bold text-white">{formatCurrencyFromCents(amountDue)}</span>
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-lg px-4 py-3" style={{ background: ACCENT }}>
+              <span className="whitespace-nowrap text-xs font-bold uppercase tracking-wider text-white">
+                Balance Outstanding
+              </span>
+              <span className="whitespace-nowrap text-sm font-bold text-white">
+                {formatCurrencyFromCents(amountDue)}
+              </span>
             </div>
           )}
         </div>
       </div>
+
+      {/* Full-width, below both columns — was previously squeezed inline
+          into the payment-details column only. */}
+      {amountPaid > 0 ? (
+        <div className="mt-6 flex items-center justify-center gap-2 rounded-lg px-4 py-3" style={{ background: GREEN_BG }}>
+          <CheckCircle2 className="h-4.5 w-4.5" style={{ color: GREEN }} />
+          <span className="text-sm font-bold uppercase tracking-wide" style={{ color: GREEN }}>
+            Payment Received via {channelLabel}
+          </span>
+        </div>
+      ) : (
+        <div
+          className="mt-6 flex items-center justify-center gap-2 rounded-lg px-4 py-3"
+          style={{ background: TINT_BG }}
+        >
+          <Clock className="h-4.5 w-4.5" style={{ color: MUTED }} />
+          <span className="text-sm font-bold uppercase tracking-wide" style={{ color: MUTED }}>
+            No Payment Recorded Yet
+          </span>
+        </div>
+      )}
 
       <div
         // mt-auto only makes sense while the card above is a flex column
@@ -380,36 +475,58 @@ export function InvoicePrintView({ order }: { order: OrderDetail }) {
         // margin has nothing to size against and instead pushes this box all
         // the way past the end of every page's content, leaving a huge blank
         // gap before it. print:mt-8 swaps it for a plain fixed gap on print.
-        // print:block (in place of the grid) + inline-block columns below —
-        // see the payment/totals section above for the same treatment.
-        // break-inside:avoid deliberately lives on each column individually
-        // (below), not here on the two-column wrapper — see that section's
-        // comment for why: on this exact wrapper it's what was causing
-        // Chrome to bump the whole box to a fresh page with a big blank gap
-        // left behind, even when it would easily fit where it was.
-        className="mt-auto grid gap-6 rounded-lg p-5 text-xs sm:grid-cols-2 print:mt-8 print:block"
-        style={{ background: TINT_BG, color: MUTED }}
+        className="mt-auto print:mt-8"
       >
         <div
-          className="print:inline-block print:w-[47%] print:align-top"
-          // Keeps this column's own paragraph from splitting mid-sentence
-          // across a page boundary (reported: "...returns." got orphaned
-          // alone on its own page).
-          style={{ breakInside: "avoid", pageBreakInside: "avoid" }}
+          // print:block + inline-block columns, instead of keeping this a
+          // CSS grid at print time — see each column's own breakInside
+          // comment for why that guard lives on the column, not this wrapper.
+          className="grid gap-6 text-xs sm:grid-cols-2 print:block"
+          style={{ color: MUTED }}
         >
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: INK }}>
-            Warranty &amp; Returns
+          <div
+            className="rounded-lg border p-4 print:inline-block print:w-[47%] print:align-top"
+            // Keeps this column's own content from splitting mid-sentence
+            // across a page boundary (reported: "...returns." got orphaned
+            // alone on its own page).
+            style={{ borderColor: BORDER, breakInside: "avoid", pageBreakInside: "avoid" }}
+          >
+            <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider" style={{ color: INK }}>
+              <Shield className="h-3.5 w-3.5" style={{ color: ACCENT }} />
+              Warranty &amp; Returns
+            </div>
+            {warrantyLines.length > 1 ? (
+              <ul className="mt-2 list-disc space-y-1 pl-4 leading-relaxed">
+                {warrantyLines.map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1.5 leading-relaxed">{tenant?.warranty_text || "—"}</p>
+            )}
           </div>
-          <p className="mt-1.5 leading-relaxed">{tenant?.warranty_text || "—"}</p>
+          <div
+            className="rounded-lg border p-4 print:inline-block print:w-[47%] print:ml-[4%] print:align-top"
+            style={{ borderColor: BORDER, breakInside: "avoid", pageBreakInside: "avoid" }}
+          >
+            <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider" style={{ color: INK }}>
+              <Scale className="h-3.5 w-3.5" style={{ color: ACCENT }} />
+              Legal Disclaimer
+            </div>
+            <p className="mt-1.5 leading-relaxed">{tenant?.legal_disclaimer_text || "—"}</p>
+          </div>
         </div>
-        <div
-          className="print:inline-block print:w-[47%] print:ml-[4%] print:align-top"
-          style={{ breakInside: "avoid", pageBreakInside: "avoid" }}
-        >
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: INK }}>
-            Legal Disclaimer
+
+        <div className="mt-6 text-center" style={{ breakInside: "avoid", pageBreakInside: "avoid" }}>
+          <div className="flex items-center justify-center gap-2">
+            <Heart className="h-4 w-4" style={{ color: ACCENT }} fill={ACCENT} />
+            <span className="text-sm font-bold" style={{ color: INK }}>
+              Thank You For Your Business!
+            </span>
           </div>
-          <p className="mt-1.5 leading-relaxed">{tenant?.legal_disclaimer_text || "—"}</p>
+          <div className="mt-1 text-xs" style={{ color: MUTED }}>
+            We appreciate your support.
+          </div>
         </div>
       </div>
     </div>

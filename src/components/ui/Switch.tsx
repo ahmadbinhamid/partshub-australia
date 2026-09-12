@@ -24,7 +24,7 @@ export function Switch({
   const switchId = id ?? innerId;
 
   return (
-    <div className={cn("flex items-start justify-between gap-4 rounded-xs border border-border bg-bg-2/40 px-4 py-3", className)}>
+    <div className={cn("flex items-start justify-between gap-4 rounded-xl border border-border bg-bg-2/40 px-4 py-3", className)}>
       {(label || description) ? (
         <div className="min-w-0">
           {label ? (

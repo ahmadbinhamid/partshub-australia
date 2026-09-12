@@ -16,7 +16,7 @@ export function ColorSwatchInput({
   return (
     <div
       className={cn(
-        "flex h-10 w-full items-center gap-2.5 rounded-md border border-border bg-card px-3 shadow-(--shadow-input)",
+        "flex h-10 w-full items-center gap-2.5 rounded-xl border border-border bg-card px-3 shadow-(--shadow-input)",
         className,
       )}
     >

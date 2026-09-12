@@ -60,8 +60,8 @@ export function MultiSelect({
           type="button"
           disabled={disabled}
           className={cn(
-            "flex h-10 w-full items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input)",
-            "outline-none! focus-visible:border-accent",
+            "flex h-10 w-full items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input)",
+            "outline-none! focus-visible:border-accent focus-visible:shadow-(--shadow-input-focus)",
             "disabled:cursor-not-allowed disabled:opacity-50",
             "transition-shadow duration-150",
             className,
@@ -105,7 +105,7 @@ export function MultiSelect({
           align="start"
           sideOffset={4}
           className={cn(
-            "z-50 w-(--radix-popover-trigger-width) overflow-hidden rounded-md border border-border bg-card shadow-lg",
+            "z-50 w-(--radix-popover-trigger-width) overflow-hidden rounded-lg border border-border bg-card shadow-lg",
             "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
             "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
           )}
@@ -113,7 +113,7 @@ export function MultiSelect({
           {/* Search */}
           {options.length > 5 && (
             <div className="p-2">
-              <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 h-9 transition-shadow duration-150 focus-within:border-accent">
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 h-9 transition-shadow duration-150 focus-within:border-accent focus-within:shadow-(--shadow-input-focus)">
                 <Search className="h-3.5 w-3.5 shrink-0 text-fg/40" />
                 <input
                   autoFocus
@@ -160,7 +160,7 @@ export function MultiSelect({
                   >
                     <div
                       className={cn(
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded-xs border-[1.5px] transition-colors",
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border-[1.5px] transition-colors",
                         selected ? "border-accent bg-accent text-accent-fg" : "border-border bg-card",
                       )}
                     >

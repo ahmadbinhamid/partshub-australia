@@ -7,6 +7,7 @@ import {
   CreditCard,
   Boxes,
   History,
+  Settings,
 } from "lucide-react";
 
 export type NavItem = {
@@ -31,6 +32,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Orders", href: "/orders", icon: (p) => <ShoppingCart {...p} /> },
   { label: "Payments", href: "/payments", icon: (p) => <CreditCard {...p} /> },
   { label: "Activity Log", href: "/activity-log", icon: (p) => <History {...p} /> },
+  { label: "Settings", href: "/settings", icon: (p) => <Settings {...p} /> },
 ];
 
 export function isNavItemActive(item: Pick<NavItem, "href" | "activeMatch">, pathname: string): boolean {

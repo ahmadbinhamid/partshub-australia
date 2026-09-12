@@ -9,7 +9,7 @@ export function Card({
   children: React.ReactNode;
 }) {
   return (
-    <div className={cn("rounded-md bg-card shadow-card ring-1 ring-inset ring-border", className)} {...rest}>
+    <div className={cn("rounded-2xl bg-card shadow-card ring-1 ring-inset ring-border", className)} {...rest}>
       {children}
     </div>
   );

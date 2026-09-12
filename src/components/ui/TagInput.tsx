@@ -46,9 +46,9 @@ export function TagInput({
   return (
     <div
       className={cn(
-        "flex min-h-10 w-full flex-wrap items-center gap-1.5 rounded-xs border border-border bg-bg px-3 py-2 shadow-sm",
-        "focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-bg",
-        "transition-shadow",
+        "flex min-h-10 w-full flex-wrap items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 shadow-(--shadow-input)",
+        "focus-within:border-accent focus-within:shadow-(--shadow-input-focus)",
+        "transition-shadow duration-150",
         disabled && "cursor-not-allowed opacity-50",
         className,
       )}
@@ -57,7 +57,7 @@ export function TagInput({
       {value.map((tag) => (
         <span
           key={tag}
-          className="inline-flex items-center gap-1 rounded-xs bg-bg-2 px-2 py-0.5 text-xs font-medium text-fg ring-1 ring-inset ring-border"
+          className="inline-flex items-center gap-1 rounded-md bg-bg-2 px-2 py-0.5 text-xs font-medium text-fg ring-1 ring-inset ring-border"
         >
           {tag}
           {!disabled && (
@@ -67,7 +67,7 @@ export function TagInput({
                 e.stopPropagation();
                 removeTag(tag);
               }}
-              className="ml-0.5 rounded-xs text-fg/40 transition hover:text-fg"
+              className="ml-0.5 rounded-sm text-fg/40 transition hover:text-fg"
             >
               <X className="h-3 w-3" />
             </button>

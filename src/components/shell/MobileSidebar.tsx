@@ -8,6 +8,7 @@ import { TenantLogo } from "@/components/branding/TenantLogo";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { APP_NAME } from "@/components/branding/AppLogoMark";
 import { NavItemsList } from "@/components/shell/NavItemsList";
+import { UserMenu } from "@/components/shell/UserMenu";
 
 export function MobileSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { settings, isLoading } = useOrgSettings();
@@ -36,9 +37,9 @@ export function MobileSidebar({ open, onClose }: { open: boolean; onClose: () =>
         <div className="flex items-center justify-between gap-2 border-b border-border/70 px-4 py-4">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             {isLoading ? (
-              <Skeleton className="h-11 w-11 shrink-0 rounded-xs" />
+              <Skeleton className="h-11 w-11 shrink-0 rounded-xl" />
             ) : (
-              <div className="shrink-0 overflow-hidden rounded-xs ring-1 ring-[hsl(var(--accent)/0.28)]">
+              <div className="shrink-0 overflow-hidden rounded-xl ring-1 ring-[hsl(var(--accent)/0.28)]">
                 <TenantLogo logoUrl={settings.logoUrl} name={settings.storeName} sizeClass="h-11" maxWidthClass="max-w-11" />
               </div>
             )}
@@ -68,6 +69,10 @@ export function MobileSidebar({ open, onClose }: { open: boolean; onClose: () =>
             <NavItemsList onItemClick={onClose} />
           </Suspense>
         </nav>
+
+        <div className="shrink-0 border-t border-border p-2">
+          <UserMenu variant="full" />
+        </div>
       </div>
     </div>
   );

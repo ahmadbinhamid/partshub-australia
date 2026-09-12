@@ -8,6 +8,12 @@ const getOrderVolume = {
   }),
 };
 
+const getRevenueTrend = {
+  query: Joi.object({
+    months: Joi.number().integer().min(1).max(24).default(6),
+  }),
+};
+
 const getActivity = {
   query: Joi.object({
     limit: Joi.number().integer().min(1).max(50).default(10),
@@ -38,4 +44,11 @@ const getActivityAnalytics = {
   }),
 };
 
-module.exports = { getOrderVolume, getActivity, getCriticalStock, listActivityLog, getActivityAnalytics };
+module.exports = {
+  getOrderVolume,
+  getRevenueTrend,
+  getActivity,
+  getCriticalStock,
+  listActivityLog,
+  getActivityAnalytics,
+};

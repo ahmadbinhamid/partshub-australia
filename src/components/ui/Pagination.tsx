@@ -155,7 +155,7 @@ const Pagination = ({
                     type="button"
                     onClick={() => onPageChange(pageNumber)}
                     className={cn(
-                      "flex h-8 min-w-8 items-center justify-center rounded-xs px-1.5 text-xs font-medium transition",
+                      "flex h-8 min-w-8 items-center justify-center rounded-md px-1.5 text-xs font-medium transition",
                       isActive
                         ? "bg-accent text-accent-fg"
                         : "text-fg/60 hover:bg-bg-2",

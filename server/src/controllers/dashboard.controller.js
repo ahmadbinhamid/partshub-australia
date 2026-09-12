@@ -30,6 +30,15 @@ exports.getOrderVolume = async (req, res) => {
   }
 };
 
+exports.getRevenueTrend = async (req, res) => {
+  try {
+    const points = await dashboardService.getMonthlyRevenueTrend(req.tenantId, req.query.months);
+    return success(res, points);
+  } catch (err) {
+    return systemfailure(res, err);
+  }
+};
+
 exports.getActivity = async (req, res) => {
   try {
     const events = await dashboardService.getRecentActivity(req.tenantId, req.query.limit);

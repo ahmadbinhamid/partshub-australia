@@ -62,8 +62,8 @@ export function Combobox({
           type="button"
           disabled={disabled}
           className={cn(
-            "flex h-10 w-full items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input)",
-            "outline-none! focus-visible:ring-2 focus-visible:ring-accent/45",
+            "flex h-10 w-full items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input)",
+            "outline-none! focus-visible:border-accent focus-visible:shadow-(--shadow-input-focus)",
             "disabled:cursor-not-allowed disabled:opacity-50",
             value ? "text-fg" : "text-fg/45",
             className,
@@ -78,7 +78,7 @@ export function Combobox({
           sideOffset={4}
           align="start"
           className={cn(
-            "z-50 w-[var(--radix-popover-trigger-width)] overflow-hidden rounded-md border border-border bg-card shadow-lg",
+            "z-50 w-[var(--radix-popover-trigger-width)] overflow-hidden rounded-lg border border-border bg-card shadow-lg",
             "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
             "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
             "data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2",
@@ -86,7 +86,7 @@ export function Combobox({
         >
           {/* Search input */}
           <div className="p-2">
-            <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 h-9 transition-shadow duration-150 focus-within:ring-2 focus-within:ring-accent/45">
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 h-9 transition-shadow duration-150 focus-within:border-accent focus-within:shadow-(--shadow-input-focus)">
               <Search className="h-3.5 w-3.5 shrink-0 text-fg/40" />
               <input
                 ref={inputRef}
@@ -114,7 +114,7 @@ export function Combobox({
                 type="button"
                 onClick={() => handleSelect(trimmedQuery)}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-xs px-2 py-1.5 text-sm transition-colors",
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                   "text-accent hover:bg-accent/10",
                 )}
               >
@@ -131,7 +131,7 @@ export function Combobox({
                   type="button"
                   onClick={() => handleSelect(opt)}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-xs px-2 py-1.5 text-sm transition-colors",
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
                     "hover:bg-accent/10 hover:text-fg",
                     opt === value ? "bg-accent/10 font-medium text-fg" : "text-fg/80",
                   )}

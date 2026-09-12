@@ -30,9 +30,9 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
     <input
       ref={ref}
       className={cn(
-        "w-full rounded-md outline-none! transition-shadow duration-150",
+        "w-full rounded-xl outline-none! transition-shadow duration-150",
         "placeholder:text-fg/45",
-        "focus-visible:border-accent",
+        "focus-visible:border-accent focus-visible:shadow-(--shadow-input-focus)",
         "disabled:cursor-not-allowed disabled:opacity-50",
         inputSizes[size],
         inputVariants[variant],

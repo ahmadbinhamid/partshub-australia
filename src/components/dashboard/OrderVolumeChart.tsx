@@ -1,19 +1,18 @@
 import { useMemo, useState } from "react";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, ComposedChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { TooltipContentProps } from "recharts";
 import { Card } from "@/components/ui/Card";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { DashboardSectionLabel } from "@/components/dashboard/DashboardSectionLabel";
+import { DashboardStatTile } from "@/components/dashboard/DashboardStatTile";
 import { cn } from "@/utils/cn";
 import { formatCurrencyFromCents } from "@/utils/format";
 import type { OrderVolumeMetric, OrderVolumePoint } from "@/types/dashboard";
 
-// Fixed, never-cycled colors — one per metric, reused consistently between
-// the tab bar, the bars themselves, and the caption row below the chart.
-const METRIC_TABS: { key: OrderVolumeMetric; label: string; legendLabel: string; color: string }[] = [
-  { key: "orders", label: "Orders", legendLabel: "Orders Count", color: "var(--color-accent)" },
-  { key: "revenueCents", label: "Revenue", legendLabel: "Revenue Generation", color: "var(--color-ok)" },
-  { key: "items", label: "Items", legendLabel: "Items Shipped", color: "var(--color-warn)" },
+const METRIC_TABS: { key: OrderVolumeMetric; label: string }[] = [
+  { key: "orders", label: "Orders" },
+  { key: "revenueCents", label: "Revenue" },
+  { key: "items", label: "Items" },
 ];
 
 function formatDateLabel(dateStr: string) {
@@ -46,16 +45,34 @@ function ChartTooltip({ active, payload }: TooltipContentProps) {
 
 export function OrderVolumeChart({ points, loading }: { points: OrderVolumePoint[]; loading?: boolean }) {
   const [metric, setMetric] = useState<OrderVolumeMetric>("orders");
-  const activeTab = METRIC_TABS.find((t) => t.key === metric)!;
 
   const data = useMemo(() => points.map((p) => ({ ...p, label: formatDateLabel(p.date) })), [points]);
 
+  const totals = useMemo(
+    () =>
+      points.reduce(
+        (acc, p) => ({
+          orders: acc.orders + p.orders,
+          revenueCents: acc.revenueCents + p.revenueCents,
+          items: acc.items + p.items,
+        }),
+        { orders: 0, revenueCents: 0, items: 0 },
+      ),
+    [points],
+  );
+
+  // Revenue is always the soft background bar (context) — the selected
+  // metric is the foreground trend line on top of it. When Revenue itself
+  // is selected there's nothing distinct left to overlay, so the bar alone
+  // carries the chart rather than drawing a redundant line on top of itself.
+  const showTrendLine = metric !== "revenueCents";
+
   return (
-    <Card className="p-4 sm:p-5">
+    <Card className="p-4 shadow-card transition-shadow duration-300 hover:shadow-md sm:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <DashboardSectionLabel>Order Volume (Last {points.length || 7} Days)</DashboardSectionLabel>
-          <p className="mt-1 text-xs text-fg/50">Daily order volume, item, and revenue tracking</p>
+          <DashboardSectionLabel badge="Daily Cycle">Order Volume &amp; Fulfillment</DashboardSectionLabel>
+          <p className="mt-1 text-xs text-fg/50">Daily orders dispatch and fulfillment velocity</p>
         </div>
         <div className="inline-flex shrink-0 rounded-md border border-border bg-bg-2/40 p-0.5">
           {METRIC_TABS.map((tab) => (
@@ -79,7 +96,7 @@ export function OrderVolumeChart({ points, loading }: { points: OrderVolumePoint
           <Skeleton className="h-full w-full" />
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+            <ComposedChart data={data} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
               <CartesianGrid vertical={false} stroke="var(--color-border)" strokeDasharray="3 3" />
               <XAxis
                 dataKey="label"
@@ -87,27 +104,49 @@ export function OrderVolumeChart({ points, loading }: { points: OrderVolumePoint
                 tickLine={false}
                 tick={{ fontSize: 11, fill: "var(--color-fg)", opacity: 0.45 }}
               />
-              <YAxis
-                allowDecimals={false}
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 11, fill: "var(--color-fg)", opacity: 0.45 }}
-                width={36}
-              />
+              <YAxis yAxisId="revenue" hide domain={[0, (max: number) => max * 1.15]} />
+              <YAxis yAxisId="metric" orientation="right" hide domain={[0, (max: number) => max * 1.35]} />
               <Tooltip cursor={{ fill: "var(--color-border)", opacity: 0.3 }} content={ChartTooltip} />
-              <Bar dataKey={metric} radius={[4, 4, 0, 0]} fill={activeTab.color} maxBarSize={40} />
-            </BarChart>
+              <Bar
+                yAxisId="revenue"
+                dataKey="revenueCents"
+                name="Revenue"
+                fill="var(--color-accent)"
+                fillOpacity={0.16}
+                radius={[6, 6, 0, 0]}
+                maxBarSize={32}
+              />
+              {showTrendLine && (
+                <Line
+                  yAxisId="metric"
+                  type="monotone"
+                  dataKey={metric}
+                  name={metric === "orders" ? "Orders" : "Items"}
+                  stroke="var(--color-accent)"
+                  strokeWidth={2.5}
+                  dot={{ r: 4, fill: "var(--color-accent)", stroke: "var(--color-card)", strokeWidth: 1.5 }}
+                  activeDot={{ r: 6 }}
+                />
+              )}
+            </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-fg/55">
-        {METRIC_TABS.map((tab) => (
-          <span key={tab.key} className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tab.color }} aria-hidden="true" />
-            {tab.legendLabel}
-          </span>
-        ))}
+      <div className="mt-4 grid grid-cols-3 gap-3 border-t border-border pt-3">
+        <DashboardStatTile variant="plain" loading={loading} label="Total Orders" value={totals.orders} />
+        <DashboardStatTile
+          variant="plain"
+          loading={loading}
+          label="Total Revenue"
+          value={<span className="text-ok">{formatCurrencyFromCents(totals.revenueCents)}</span>}
+        />
+        <DashboardStatTile
+          variant="plain"
+          loading={loading}
+          label="Items Shipped"
+          value={<span className="text-accent">{totals.items}</span>}
+        />
       </div>
     </Card>
   );

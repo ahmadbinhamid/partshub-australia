@@ -21,8 +21,11 @@ const requestId = require("./middlewares/requestId");
 
 const app = express();
 
-// Trust the X-Forwarded-Proto header set by nginx so req.protocol resolves to "https"
-app.set("trust proxy", true);
+// Trust exactly one hop (nginx) so req.protocol resolves to "https" via
+// X-Forwarded-Proto, without trusting arbitrary client-supplied X-Forwarded-For
+// values — `true` trusts every hop, which lets clients spoof req.ip and bypass
+// IP-keyed rate limiting (see middlewares/rateLimit.js).
+app.set("trust proxy", 1);
 
 // Core middlewares
 app.use(requestId);

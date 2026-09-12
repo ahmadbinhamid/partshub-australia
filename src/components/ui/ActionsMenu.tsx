@@ -23,7 +23,7 @@ const DropdownMenuTrigger = React.forwardRef<
     // also a 28px icon square. Only the bare (non-asChild) trigger gets them.
     className={cn(
       !asChild &&
-        "flex h-7 w-7 items-center justify-center rounded-xs text-fg/40 outline-none transition hover:bg-bg-2 hover:text-fg data-[state=open]:bg-bg-2 data-[state=open]:text-fg",
+        "flex h-7 w-7 items-center justify-center rounded-md text-fg/40 outline-none transition hover:bg-bg-2 hover:text-fg data-[state=open]:bg-bg-2 data-[state=open]:text-fg",
       className,
     )}
     {...props}
@@ -40,7 +40,7 @@ const DropdownMenuContent = React.forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        "z-50 min-w-36 overflow-hidden rounded-xs border border-border bg-bg shadow-lg",
+        "z-50 min-w-36 overflow-hidden rounded-lg border border-border bg-bg shadow-lg",
         "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         "data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2",
@@ -61,7 +61,14 @@ const DropdownMenuItem = React.forwardRef<
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
-      "flex w-full cursor-default select-none items-center gap-2.5 px-3 py-2 text-sm outline-none transition",
+      // outline-none! (not plain outline-none) — globals.css's :focus-visible
+      // ring is an unlayered rule, so it wins over a plain Tailwind utility
+      // regardless of source order; only the `!important` form actually
+      // suppresses it. Needed here because Radix gives a highlighted item
+      // real DOM focus (roving tabindex) on hover/keyboard nav, and the
+      // item's own focus:bg-* already communicates "highlighted" — the gold
+      // ring on top of that was the bug being fixed.
+      "flex w-full cursor-default select-none items-center gap-2.5 px-3 py-2 text-sm outline-none! transition",
       destructive
         ? "text-danger focus:bg-danger/8"
         : "text-fg focus:bg-bg-2",

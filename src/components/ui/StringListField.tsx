@@ -1,5 +1,6 @@
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 
 // Reusable "add/remove rows of free text" input — same row pattern as eBay's
 // Superseded Part Number(s) list (EbayItemSpecificsSection.tsx), pulled out
@@ -38,18 +39,18 @@ export function StringListField({
       <div className="space-y-2">
         {rows.map((val, i) => (
           <div key={i} className="flex items-center gap-2">
-            <input
+            <Input
               type="text"
               value={val}
               onChange={(e) => updateRow(i, e.target.value)}
               placeholder={placeholder}
-              className="w-full min-w-0 flex-1 rounded-xs border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg/35 outline-none focus-within:ring-1 focus-within:ring-primary/40"
+              className="min-w-0 flex-1"
             />
             <button
               type="button"
               onClick={() => removeRow(i)}
               disabled={rows.length === 1 && val === ""}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xs border border-border text-fg/40 transition-colors hover:border-danger/50 hover:bg-danger/5 hover:text-danger disabled:cursor-not-allowed disabled:opacity-30"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-fg/40 transition-colors hover:border-danger/50 hover:bg-danger/5 hover:text-danger disabled:cursor-not-allowed disabled:opacity-30"
               title="Remove"
             >
               <X className="h-3.5 w-3.5" />

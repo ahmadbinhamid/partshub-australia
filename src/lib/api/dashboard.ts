@@ -3,6 +3,7 @@ import type { BeResponse } from "./base";
 import type {
   DashboardStats,
   OrderVolumePoint,
+  RevenueTrendResponse,
   ChannelHealth,
   ActivityEvent,
   ActivityLogPage,
@@ -23,6 +24,13 @@ export const getActiveChannels = async () => {
 export const getOrderVolume = async (days = 7) => {
   const { data } = await apiClient.get<BeResponse<OrderVolumePoint[]>>("/dashboard/order-volume", {
     params: { days },
+  });
+  return data;
+};
+
+export const getRevenueTrend = async (months = 6) => {
+  const { data } = await apiClient.get<BeResponse<RevenueTrendResponse>>("/dashboard/revenue-trend", {
+    params: { months },
   });
   return data;
 };

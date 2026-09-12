@@ -17,9 +17,9 @@ const textareaSizes: Record<TextareaSize, string> = {
 };
 
 const textareaVariants: Record<TextareaVariant, string> = {
-  default: "border border-border bg-bg text-fg shadow-sm",
-  ghost: "border border-transparent bg-transparent text-fg hover:bg-bg-2/50",
-  filled: "border border-transparent bg-bg-2 text-fg",
+  default: "border border-border bg-card text-fg shadow-(--shadow-input)",
+  ghost: "border border-transparent bg-transparent text-fg hover:bg-field-hover/50",
+  filled: "border border-transparent bg-field-hover text-fg",
 };
 
 export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
@@ -30,9 +30,9 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(fun
     <textarea
       ref={ref}
       className={cn(
-        "w-full rounded-xs outline-none transition resize-y",
+        "w-full rounded-xl outline-none! transition-shadow duration-150 resize-y",
         "placeholder:text-fg/45",
-        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
+        "focus-visible:border-accent focus-visible:shadow-(--shadow-input-focus)",
         "disabled:cursor-not-allowed disabled:opacity-50",
         textareaSizes[size],
         textareaVariants[variant],

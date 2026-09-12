@@ -14,9 +14,9 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-10 w-full items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input)",
+      "flex h-10 w-full items-center justify-between rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input)",
       "placeholder:text-fg/45 text-fg transition-shadow duration-150",
-      "outline-none! focus-visible:border-accent",
+      "outline-none! focus-visible:border-accent focus-visible:shadow-(--shadow-input-focus)",
       "disabled:cursor-not-allowed disabled:opacity-50",
       "[&>span]:line-clamp-1",
       className,
@@ -67,7 +67,7 @@ const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        "relative z-50 max-h-96 min-w-32 overflow-hidden rounded-md border border-border bg-card text-fg shadow-lg",
+        "relative z-50 max-h-96 min-w-32 overflow-hidden rounded-lg border border-border bg-card text-fg shadow-lg",
         "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2",
@@ -114,7 +114,7 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex w-full cursor-default select-none items-center rounded-xs py-1.5 pl-2 pr-8 text-sm outline-none",
+      "relative flex w-full cursor-default select-none items-center rounded-md py-1.5 pl-2 pr-8 text-sm outline-none",
       "focus:bg-accent/10 focus:text-fg",
       "data-disabled:pointer-events-none data-disabled:opacity-50",
       className,
@@ -153,8 +153,8 @@ const NativeSelect = React.forwardRef<
     ref={ref}
     value={value}
     className={cn(
-      "flex h-10 w-full appearance-none rounded-md border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input) transition-shadow duration-150",
-      "outline-none! focus:border-accent",
+      "flex h-10 w-full appearance-none rounded-xl border border-border bg-card px-3 py-2 text-sm shadow-(--shadow-input) transition-shadow duration-150",
+      "outline-none! focus:border-accent focus:shadow-(--shadow-input-focus)",
       "disabled:cursor-not-allowed disabled:opacity-50",
       value === "" || value === undefined ? "text-fg/45" : "text-fg",
       className,

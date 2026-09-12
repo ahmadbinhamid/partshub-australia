@@ -15,7 +15,7 @@ const InventoryHistory = require("../models/InventoryHistory");
 const MarketplaceListing = require("../models/MarketplaceListing");
 const InventorySettings = require("../models/InventorySettings");
 const Tenant = require("../models/Tenant");
-const { ORDER_STATUS } = require("../constants/order.constants");
+const { ORDER_STATUS, ORDER_CHANNEL } = require("../constants/order.constants");
 const { LISTING_STATE } = require("../constants/marketplace.constants");
 const { buildWordSearchOr } = require("../utils/regex");
 const { formatOrderNumber, stripOrderNumberPrefix } = require("../utils/orderNumberFormat");
@@ -36,6 +36,43 @@ async function getInventoryValue(tenantId) {
     { $group: { _id: null, totalValue: { $sum: { $multiply: ["$stock_count", "$product.price"] } } } },
   ]);
   return result?.totalValue || 0;
+}
+
+// Real (not fabricated) trend figure for the Total Inventory Value card —
+// the % the value has moved over the last `days` days, derived from actual
+// InventoryHistory adjustments (each one's stock delta × the product's
+// price) rather than a snapshot history this app doesn't keep. Returns null
+// when there isn't enough history to establish a baseline (division by
+// zero, or a brand-new tenant) — the frontend shows "no trend yet" rather
+// than a misleading 0%/Infinity.
+//
+// Also returns null when the baseline was near-zero — a tenant going from
+// $1 of stock to $500 is a real 49900% "increase" but not a meaningful
+// trend figure, and rendering it verbatim is what blew out the MetricCard
+// layout in production (a 5-character badge assumption baked into the
+// component). MAX_MEANINGFUL_CHANGE_PCT draws the line: past it, "no
+// baseline to compare against" is the more honest read than the number.
+const MAX_MEANINGFUL_CHANGE_PCT = 500;
+
+async function getInventoryValueChangePct(tenantId, currentValue, days = 7) {
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - days);
+
+  const [result] = await InventoryHistory.aggregate([
+    { $match: { created_at: { $gte: since } } },
+    { $lookup: { from: "products", localField: "product", foreignField: "_id", as: "product" } },
+    { $unwind: "$product" },
+    { $match: { "product.deleted_at": null, "product.tenant_id": tenantId } },
+    { $group: { _id: null, netValueChange: { $sum: { $multiply: ["$adjustment", "$product.price"] } } } },
+  ]);
+
+  const netValueChange = result?.netValueChange || 0;
+  const baselineValue = currentValue - netValueChange;
+  if (baselineValue <= 0) return null;
+
+  const changePct = (netValueChange / baselineValue) * 100;
+  if (Math.abs(changePct) > MAX_MEANINGFUL_CHANGE_PCT) return null;
+  return changePct;
 }
 
 // Rolls locations up to one row per product+variant first — "low on stock"
@@ -142,8 +179,12 @@ async function getChannelHealth(tenantId) {
 
 async function getStats(tenantId) {
   const settings = await InventorySettings.getOrCreate(tenantId);
-  const [totalInventoryValue, stockCounts, pendingOrders, channelHealth] = await Promise.all([
-    getInventoryValue(tenantId),
+  // getInventoryValueChangePct needs the current total as its baseline
+  // reference point, so it can't join the Promise.all below — the other
+  // three are still fetched concurrently with it.
+  const totalInventoryValue = await getInventoryValue(tenantId);
+  const [inventoryValueChangePct, stockCounts, pendingOrders, channelHealth] = await Promise.all([
+    getInventoryValueChangePct(tenantId, totalInventoryValue),
     getStockCounts(tenantId, settings.low_stock_threshold),
     getPendingOrdersStats(tenantId),
     getChannelHealth(tenantId),
@@ -151,6 +192,7 @@ async function getStats(tenantId) {
 
   return {
     totalInventoryValue,
+    inventoryValueChangePct,
     lowStockCount: stockCounts.lowStockCount,
     outOfStockCount: stockCounts.outOfStockCount,
     pendingOrdersCount: pendingOrders.count,
@@ -166,14 +208,24 @@ async function getStats(tenantId) {
 // One bucket per calendar day for the last `days` days (including today),
 // always returning a fully-populated series (zero-filled) so the chart never
 // has to guess about missing days.
+//
+// Every boundary here is built with Date.UTC(...) rather than the local-time
+// setters (setDate/setHours) that used to be here — those construct a LOCAL
+// midnight, which toISOString() (used for the bucket key and for matching
+// order.created_at) then renders as the PREVIOUS UTC calendar day on any
+// server whose local timezone is ahead of UTC. That silently dropped today
+// and shifted the entire window a day into the past. Found by running this
+// against real data on a UTC+5 box — every bucket came back one calendar
+// day earlier than intended. Since order.created_at is a real timestamp
+// compared with the same toISOString() slice, bucketing everything through
+// UTC from construction onward is what keeps the two sides consistent.
 async function getOrderVolumeTrend(tenantId, days = 7) {
-  const since = new Date();
-  since.setDate(since.getDate() - (days - 1));
-  since.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const sinceUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (days - 1)));
 
   const orders = await Order.find({
     tenant_id: tenantId,
-    created_at: { $gte: since },
+    created_at: { $gte: sinceUtc },
     status: { $ne: ORDER_STATUS.CANCELLED },
   })
     .select("created_at total items")
@@ -181,8 +233,7 @@ async function getOrderVolumeTrend(tenantId, days = 7) {
 
   const byDate = new Map();
   for (let i = 0; i < days; i++) {
-    const d = new Date(since);
-    d.setDate(d.getDate() + i);
+    const d = new Date(Date.UTC(sinceUtc.getUTCFullYear(), sinceUtc.getUTCMonth(), sinceUtc.getUTCDate() + i));
     const key = d.toISOString().slice(0, 10);
     byDate.set(key, { date: key, orders: 0, revenueCents: 0, items: 0 });
   }
@@ -197,6 +248,67 @@ async function getOrderVolumeTrend(tenantId, days = 7) {
   }
 
   return Array.from(byDate.values());
+}
+
+// ── Monthly revenue trend ───────────────────────────────────────────────────
+
+// One bucket per calendar month for the last `months` months (including the
+// current month), always zero-filled — same "always fully populated"
+// contract as getOrderVolumeTrend above — plus a per-channel revenue split.
+// Every known ORDER_CHANNEL value is pre-seeded at 0 on every bucket (not
+// just the channels that happened to have an order that month) so a
+// multi-line "by channel" chart never has to treat a zero-order month as a
+// missing data point and break the line.
+//
+// Also returns previousPeriodRevenueCents — the same-length window
+// immediately before `points` — so the dashboard can show a real "+X% vs
+// prior period" figure instead of a fabricated target. Fetched in the same
+// query (a 2x-wide window, split after the fact) rather than a second round
+// trip.
+//
+// Built entirely with Date.UTC(...) for the same reason getOrderVolumeTrend
+// above is — local-time month/date construction, fed through toISOString(),
+// shifts every bucket into the wrong month on a server whose local timezone
+// is ahead of UTC.
+async function getMonthlyRevenueTrend(tenantId, months = 6) {
+  const now = new Date();
+  const sinceUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months * 2 - 1), 1));
+
+  const orders = await Order.find({
+    tenant_id: tenantId,
+    created_at: { $gte: sinceUtc },
+    status: { $ne: ORDER_STATUS.CANCELLED },
+  })
+    .select("created_at total channel")
+    .lean();
+
+  const channelKeys = Object.values(ORDER_CHANNEL);
+  const byMonth = new Map();
+  for (let i = 0; i < months * 2; i++) {
+    const bucketDate = new Date(Date.UTC(sinceUtc.getUTCFullYear(), sinceUtc.getUTCMonth() + i, 1));
+    const key = bucketDate.toISOString().slice(0, 7); // yyyy-mm
+    const byChannel = {};
+    for (const channel of channelKeys) byChannel[channel] = 0;
+    byMonth.set(key, { month: key, revenueCents: 0, orders: 0, byChannel });
+  }
+
+  for (const order of orders) {
+    const key = new Date(order.created_at).toISOString().slice(0, 7);
+    const bucket = byMonth.get(key);
+    if (!bucket) continue; // order.created_at rounding edge case — ignore rather than crash
+    bucket.revenueCents += order.total;
+    bucket.orders += 1;
+    bucket.byChannel[order.channel] = (bucket.byChannel[order.channel] || 0) + order.total;
+  }
+
+  // Map insertion order is chronological (built oldest-first above) — the
+  // first half is the prior period, the second half is what the chart shows.
+  const allBuckets = Array.from(byMonth.values());
+  const previousPeriodBuckets = allBuckets.slice(0, months);
+  const points = allBuckets.slice(months);
+  const previousPeriodRevenueCents = previousPeriodBuckets.reduce((sum, b) => sum + b.revenueCents, 0);
+
+  return { points, previousPeriodRevenueCents };
 }
 
 // ── Recent activity — synthesized from Orders + InventoryHistory ───────────
@@ -452,6 +564,7 @@ module.exports = {
   getStats,
   getChannelHealth,
   getOrderVolumeTrend,
+  getMonthlyRevenueTrend,
   getRecentActivity,
   listActivity,
   getActivityAnalytics,

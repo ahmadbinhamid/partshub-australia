@@ -44,7 +44,7 @@ export function ActivityTrendChart({ points, loading }: { points: ActivityAnalyt
           <div className="h-full w-full animate-pulse rounded-md bg-bg-2" />
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+            <BarChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
               <CartesianGrid vertical={false} stroke="var(--color-border)" strokeDasharray="3 3" />
               <XAxis
                 dataKey="label"

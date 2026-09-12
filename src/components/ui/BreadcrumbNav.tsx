@@ -30,7 +30,7 @@ export function BreadcrumbNav({ items, className, showBack = true }: BreadcrumbN
             type="button"
             onClick={() => navigate(-1)}
             aria-label="Go back"
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-xs text-fg/50 transition hover:bg-bg-2 hover:text-fg"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-fg/50 transition hover:bg-bg-2 hover:text-fg"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </button>

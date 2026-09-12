@@ -22,7 +22,7 @@ export function ViewToggle({
       role="radiogroup"
       aria-label="Layout"
       className={cn(
-        "inline-flex items-center gap-0.5 rounded-md bg-bg-2 p-0.5 ring-1 ring-inset ring-border",
+        "inline-flex items-center gap-0.5 rounded-lg bg-bg-2 p-0.5 ring-1 ring-inset ring-border",
         className,
       )}
     >
@@ -37,7 +37,7 @@ export function ViewToggle({
             title={label}
             onClick={() => onChange(option)}
             className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-xs transition-colors",
+              "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
               active ? "bg-card text-fg shadow-card ring-1 ring-inset ring-border" : "text-fg/45 hover:text-fg/70",
             )}
           >

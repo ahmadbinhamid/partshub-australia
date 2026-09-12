@@ -12,7 +12,7 @@ const { getTransporterForTenant } = require("./smtp.keys.service");
 const platformTransporter = nodemailer.createTransport({
   host: config.smtp.host,
   port: config.smtp.port,
-  secure: false, // Mailtrap sandbox usually false
+  secure: config.smtp.port === 465, // implicit TLS on 465; 587/25/2525 use STARTTLS
   auth: {
     user: config.smtp.user,
     pass: config.smtp.pass,

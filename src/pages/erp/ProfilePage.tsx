@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { User, KeyRound } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { User, KeyRound, LogOut } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -20,7 +21,8 @@ type Section = "profile" | "change-password";
 const EMPTY_PASSWORD_FORM: PasswordFormState = { current_password: "", new_password: "", confirm_password: "" };
 
 export default function ProfilePage() {
-  const { user, setAuth, token } = useAuth();
+  const { user, setAuth, token, logout } = useAuth();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const [section, setSection] = useState<Section>("profile");
   const [form, setForm] = useState<ProfileFormState>({ first_name: "", last_name: "" });
@@ -87,6 +89,11 @@ export default function ProfilePage() {
     setSection("profile");
   }
 
+  function handleLogout() {
+    logout();
+    navigate("/login", { replace: true });
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3">
@@ -144,6 +151,17 @@ export default function ProfilePage() {
               Change Password
             </button>
           </nav>
+
+          <div className="my-3 h-px bg-border" />
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-danger transition-colors hover:bg-danger/8"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            Log Out
+          </button>
         </aside>
 
         {/* Content */}

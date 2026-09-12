@@ -4,7 +4,7 @@ export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "outl
 export type ButtonSize = "sm" | "md" | "lg" | "icon";
 
 const base =
-  "inline-flex items-center justify-center rounded-md font-medium transition-all duration-150 active:scale-[0.98] active:transition-none outline-none! focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100";
+  "inline-flex items-center justify-center rounded-xl font-semibold transition-all duration-150 active:scale-[0.98] active:transition-none outline-none! focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100";
 
 const variants: Record<ButtonVariant, string> = {
   primary: "bg-accent text-accent-fg shadow-[0_1px_0_rgba(0,0,0,0.05)] hover:brightness-95",

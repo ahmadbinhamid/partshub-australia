@@ -96,7 +96,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               "print:px-0 print:py-0",
             )}
           >
-            <div className="w-full min-w-0">{children}</div>
+            {/* max-w caps how wide content stretches on large/ultra-wide
+                monitors — without it, a 4-column stat grid or a chart on a
+                1600px+ screen just spreads out with huge gaps instead of
+                staying a comfortable reading width. mx-auto centers the
+                capped column instead of leaving it pinned to the left. */}
+            <div className="mx-auto w-full min-w-0 max-w-[1600px]">{children}</div>
           </main>
         </div>
       </div>

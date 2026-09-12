@@ -53,7 +53,7 @@ export function Dialog({
       />
       <div
         className={cn(
-          "absolute top-0 flex h-[100dvh] max-h-[100dvh] w-full max-w-[min(100vw,560px)] flex-col border-border bg-bg shadow-2xl transition-transform duration-200 ease-out",
+          "absolute top-0 flex h-[100dvh] max-h-[100dvh] w-full max-w-[min(100vw,560px)] flex-col border-border bg-bg shadow-(--shadow-soft) transition-transform duration-200 ease-out",
           anchor === "left"
             ? "left-0 border-r pl-[max(0px,env(safe-area-inset-left))]"
             : "right-0 border-l pr-[max(0px,env(safe-area-inset-right))]",

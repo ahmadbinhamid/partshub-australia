@@ -36,14 +36,14 @@ const SheetContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-md flex-col border-l border-border bg-bg shadow-2xl",
+        "fixed inset-y-0 right-0 z-50 flex h-dvh w-full max-w-md flex-col border-l border-border bg-bg shadow-(--shadow-soft)",
         "data-[state=open]:animate-sheet-in data-[state=closed]:animate-sheet-out",
         className,
       )}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-xs p-1 text-fg/40 transition hover:bg-bg-2 hover:text-fg outline-none! focus-visible:ring-2 focus-visible:ring-ring">
+      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1 text-fg/40 transition hover:bg-bg-2 hover:text-fg outline-none! focus-visible:ring-2 focus-visible:ring-ring">
         <X className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>

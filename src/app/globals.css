@@ -205,7 +205,14 @@
 .dark {
   /* Surfaces */
   --bg: 222 22% 8%;
-  --bg-2: 222 20% 11%;
+  /* Was identical to --card (both 11%) — every bg-2-filled element sitting
+     on a card (Skeleton, muted badges, field-hover, tag-neutral-bg) was
+     rendering at zero contrast against its own container, effectively
+     invisible regardless of the animate-pulse animation actually running.
+     Bumped to match --surface-elevated's tier so it's a genuinely distinct,
+     visible fill. Found live: dark-mode loading skeletons looked like
+     nothing was there at all. */
+  --bg-2: 222 18% 15%;
   --surface: 222 20% 11%;
   --surface-elevated: 222 18% 14%;
   --card: 222 20% 11%;

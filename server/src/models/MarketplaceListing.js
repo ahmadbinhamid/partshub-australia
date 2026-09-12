@@ -143,6 +143,17 @@ baseSchema.index(
 // blocks writes on this collection in production.
 baseSchema.index({ tenant_id: 1, platform: 1, sync_status: 1 }, { background: true });
 baseSchema.index({ tenant_id: 1, platform: 1, synced_at: -1 }, { background: true });
+// getPlatformChannelHealth (dashboard.service.js) filters on exactly this
+// shape — { tenant_id, platform, state } — previously only sync_status/
+// synced_at were covered, so `state` fell outside every compound index above.
+baseSchema.index({ tenant_id: 1, platform: 1, state: 1 }, { background: true });
+// listListings/listListingsGroupedByProduct (listing.query.service.js) — the
+// hottest read path in the marketplace feature (backs the Catalogue page's
+// Listings tab) — sort/group by created_at and updated_at respectively, with
+// neither previously covered by any index, forcing an in-memory sort (or a
+// full collection scan once it's large) on every load.
+baseSchema.index({ tenant_id: 1, created_at: -1 }, { background: true });
+baseSchema.index({ tenant_id: 1, updated_at: -1 }, { background: true });
 
 const MarketplaceListing = model("MarketplaceListing", baseSchema);
 

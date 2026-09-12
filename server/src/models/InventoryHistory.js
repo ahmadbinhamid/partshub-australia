@@ -78,4 +78,13 @@ const inventoryHistorySchema = buildSchema(
   { softDelete: false },
 );
 
+// inventory.service.js#getHistory: { inventory }, sort by created_at desc.
+inventoryHistorySchema.index({ inventory: 1, created_at: -1 });
+// dashboard.service.js's activity-log aggregation optionally $matches on a
+// bare created_at date range BEFORE the $lookup to products (tenant scoping
+// happens post-lookup, so it can't be part of a compound index here) — a
+// single-field index still lets that initial range filter use an index
+// instead of a full collection scan.
+inventoryHistorySchema.index({ created_at: -1 });
+
 module.exports = model("InventoryHistory", inventoryHistorySchema);

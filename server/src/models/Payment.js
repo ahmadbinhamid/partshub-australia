@@ -62,7 +62,10 @@ const paymentSchema = buildSchema({
   order_effects_applied_at: { type: Date, default: null },
 });
 
-paymentSchema.index({ order: 1 });
+// payment.service.js's various { order } lookups all sort by created_at —
+// this compound index covers both; still serves a plain { order } query too
+// (compound indexes support their own prefix).
+paymentSchema.index({ order: 1, created_at: -1 });
 // partialFilterExpression, NOT sparse — some existing Payment docs have
 // stripe_payment_intent_id stored as literal null (not absent), and sparse
 // only excludes a field that's entirely unset, not one explicitly null (see

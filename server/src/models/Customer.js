@@ -38,5 +38,8 @@ customerSchema.index(
   { unique: true, partialFilterExpression: { deleted_at: null, email: { $type: "string" } } },
 );
 customerSchema.index({ name: 1 });
+// customer.service.js#listCustomers: { tenant_id }, sort by created_at desc,
+// paginated — covers both the filter and the sort.
+customerSchema.index({ tenant_id: 1, created_at: -1 });
 
 module.exports = model("Customer", customerSchema);

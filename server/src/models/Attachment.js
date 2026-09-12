@@ -13,7 +13,9 @@ const attachmentSchema = buildSchema(
     // tenant's files just by guessing/enumerating an id. Found live.
     // Backfilled onto every pre-existing Attachment by
     // scripts/backfillTenantId.js.
-    tenant_id: { type: require("mongoose").Schema.Types.ObjectId, ref: "Tenant", required: true, index: true },
+    // Compound index below already covers plain tenant_id lookups as a
+    // prefix, so no separate single-field index here.
+    tenant_id: { type: require("mongoose").Schema.Types.ObjectId, ref: "Tenant", required: true },
     uid: { type: String, unique: true, required: true },
     file_name: { type: String, default: null },
     original_name: { type: String, default: null },
@@ -33,6 +35,10 @@ const attachmentSchema = buildSchema(
   },
   { softDelete: true },
 );
+
+// attachment.service.js's list endpoint is { tenant_id }, sort by
+// created_at desc, paginated — this covers both the filter and the sort.
+attachmentSchema.index({ tenant_id: 1, created_at: -1 });
 
 attachmentSchema.virtual("url").get(function () {
   return buildAttachmentUrl(this.file_name);
